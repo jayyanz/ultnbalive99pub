@@ -1,0 +1,182 @@
+; NBA Live 99 fix, {BUILD} build. All settings are optional.
+; Releases ship this file as nba99fix.ini.default. On the first start the
+; launcher copies it to nba99fix.ini, which holds your settings from then on and
+; is never replaced by an update. To go back to the defaults, delete
+; nba99fix.ini. After an update, nba99fix.ini.default lists any new settings.
+; (The game keeps its own settings in nba99.ini; this file is only ours.)
+;@main
+; This is the Main build for playing. If something goes wrong, the Debug build
+; (same files, with logs and crash reports switched on) helps track it down.
+;@end
+;@debug
+; This is the Debug build: logs go to the logs folder and crash reports
+; (a log entry plus a .dmp file) to the crash folder. Use the Main build for
+; normal play.
+;@end
+
+[launcher]
+; Game exe to start (default: NBAWIN.EXE, the v1.1 exe from EA's patch)
+;Exe=NBAWIN.EXE
+; Arguments for the game (default: 3dfx, which selects the game's 3dfx driver
+; without the registry). The game also knows NOSOUND and WINDOW.
+;Args=3dfx
+;@debug
+; Write logs\launcher.log (1 = yes, default in Debug)
+;Log=1
+; Wait for the game to close and report a crash with a message (1 = yes, default)
+;WatchGame=1
+;@end
+
+[nba99]
+; Skip the CD check (1 = yes, default)
+;NoCDCheck=1
+; Stop the game switching the monitor to 640x480 through DirectDraw, so our
+; glide2x.dll can use the desktop resolution (1 = yes, default)
+;KeepDesktopMode=1
+; At start, delete a nbatemp\ folder left behind when the game was closed with
+; Alt+F4 or crashed (1 = yes, default). The game deletes it itself on a
+; normal quit. Skipped while another copy of the game runs from this folder.
+;CleanTempFolder=1
+; Front-end mouse (1 = on, default): the menus are made of 640x480 Windows
+; controls; with the picture scaled to the screen, clicks are passed to the
+; control under the matching point of the picture. 0 = off.
+;MouseMap=1
+; Front-end text labels (1 = on, default): the game's menu labels keep the
+; text pointer they are given. Windows 10 and 11 give them a temporary copy,
+; which shows as garbled words (such as "I"); this gives them the game's own
+; text, as Windows 98 did. 0 = off.
+;WindowTextFix=1
+; Alt-Tab in the menus (1 = on, default): Windows minimises the game window
+; when you switch away, and the game's menus then wait for good. 1 keeps the
+; menus drawing while the window is minimised, so the game carries on when
+; you switch back. 0 = off.
+;AltTabFix=1
+; The game writes one value to the registry (it turns off Internet Explorer's
+; dial-up autodial). 0 (default) leaves the registry as it was; 1 lets the
+; game write it.
+;RegistryWrites=0
+; Pin only the game's own threads to one CPU (1 = yes; default 0 in 0.1,
+; until NBA Live 99 shows the problem this fixed in NBA Live 98)
+;PinGameThreads=0
+; Which CPU the game's threads use with PinGameThreads=1 (default -1 = the
+; lowest available)
+;GameCPU=-1
+; Stop the game's worker threads only at a safe point (holding no lock) when
+; the game kills them (1 = yes; default 0 in 0.1, as above)
+;SafeTerminate=0
+; Write logs\nba99core.log (1 = yes; default {LOG})
+;Log={LOG}
+; Write logs\timing.log: one line per second with the game clock and frame
+; figures (1 = yes; default {LOG})
+;TimingLog={LOG}
+; Precise game clock (default 0 in 0.1): give the game a 1 ms accurate
+; GetTickCount. In NBA Live 98 this smoothed the game clock; for 99 it comes
+; with frame pacing in a later release.
+;PreciseClock=0
+;@debug
+; THRASH call log (0 = off, default): 1 makes the game load
+; 3rash\voodoologa.dll (in the Debug release), which logs every call the game
+; makes to EA's 3D driver to thrash_log.txt in the logs folder and passes it on
+; to 3rash\voodooa.dll.
+;ThrashLog=0
+; Crash report: exception, registers and call stack in nba99core.log, plus a
+; minidump in the crash folder (1 = yes, default)
+;CrashLog=1
+; Full memory minidump (about 100 MB) instead of a small one (0 = no, default)
+;CrashDumpFull=0
+; Test the crash report: crash on purpose N seconds after start (0 = off, default)
+;CrashTest=0
+; Log every file the game opens (0 = no, default)
+;LogFileOpens=0
+; Log where every thread is, every N seconds (0 = off, default)
+;ThreadDump=0
+; Stall profiler: for every second with frames over 40 ms, write to
+; logs\profile.log where the game's main thread spent its time and which
+; files it read (1 = yes, default)
+;ProfileStalls=1
+; Log the next N mouse messages after the first click in the menus (0 = off, default)
+;MouseTrace=0
+; Log every change of one dword in the game's memory, e.g. 0x5FD1C8 (default off)
+;WatchAddr=
+;@end
+
+;@debug
+[thrashlog]
+; Settings for 3rash\voodoologa.dll (ThrashLog=1 above).
+; Driver in 3rash\ to pass the calls on to (default voodooa.dll)
+;Real=voodooa.dll
+; Calls logged in full for each function (default 40; lockwindow, unlockwindow,
+; readrect and writerect get five times as many). Setup calls (init,
+; setvideomode, window, ...) are always logged. After that, one TICK line per
+; second with the call counts.
+;First=40
+;@end
+
+[glide]
+; Settings for our glide2x.dll (Glide 2 on Direct3D 11), which EA's Voodoo
+; driver (3rash\voodooa.dll) draws through. The game draws a 640x480 screen.
+; It is shown as a 4:3 picture centred on the monitor (black bars at the sides
+; on a widescreen display).
+; Internal 3D resolution, made 4:3 (default 0 = the 4:3 part of the desktop,
+; e.g. 1440x1080 on a 1920x1080 monitor)
+;Width=0
+;Height=0
+; Run in a normal window instead of borderless full screen (0 = no, default).
+; In a window, Width/Height also set the window size (default 1280x960).
+;Windowed=0
+; 0 = the wrapper paces frames itself (default), 1 = wait for vsync
+;VSync=0
+; Frame rate cap used when VSync=0 (default 60)
+;FrameLimit=60
+; Frame pacing locks (StepLock, DisplayLock, QueueSkip): default 0 in 0.1.
+; They need the game's clock and simulation step counters, which come in a
+; later release for NBA Live 99.
+;StepLock=0
+;DisplayLock=0
+;QueueSkip=0
+; Widescreen matches (NBA Live 98 feature, default 0 in 0.1): 1 draws the
+; match 3D across the whole width of a wide monitor. Not yet checked in
+; NBA Live 99.
+;Widescreen=0
+; Full-resolution 3D behind the menus (default 1). NBA Live 99 draws its menus
+; over a live 3D arena at 640x480. With 1 the arena stays at full resolution
+; and only the menus come from the game's 640x480 picture. 0 shows the game's
+; own 640x480 picture, scaled.
+;MenuFullRes=1
+; Smooth (1, default) or sharp pixel (0) scaling of the game's 640x480 menu
+; picture
+;LinearMenus=1
+; Screenshots (default 1): Page Down saves the picture on the screen to
+; screenshots\NBA99_<date>_<time>.png in the game folder (the game does not
+; see the key; it works in the menus and in matches). 0 = off.
+;Screenshots=1
+; Depth values past the 16-bit range wrap around, as on a real Voodoo card
+; (default 1).
+;DepthWrap=1
+; Swap the Glide cull direction (NBA Live 98 test setting, default 0). Only
+; for testing missing or inside-out polygons.
+;CullInvert=0
+; Smooth (1, default) or sharp pixel (0) scaling of the final picture
+;LinearScaling=1
+; Extra brightness on top of the game's own gamma (default 1.0)
+;Gamma=1.0
+; CRT filter (default off). The game's picture is drawn as its own 480 lines on
+; a simulated CRT. Shaders ported from DOSBox Staging (crt-hyllian and
+; vga-1080p, MIT licence). off, auto, sharp, soft
+;CRT=off
+; Frame rate overlay in the top-left corner (1 = show from the start; default
+; {LOG}). Ctrl+F11 shows or hides it at any time.
+;Overlay={LOG}
+; Write logs\glide2x.log (1 = yes; default {LOG})
+;Log={LOG}
+;@debug
+; Save the picture as logs\glide_frame_N.bmp at frame N, or every N frames if
+; negative (0 = off, default)
+;DumpFrame=0
+; Judder log (NBA Live 98 feature, default 0): judder.log in the session's log
+; folder, with the timing of frames that came late or early.
+;JudderLog=0
+; Ctrl+F10 traces one frame: every draw in order, with its depth, blend and
+; texture state and the code that made it, in logs\glide_trace_N.txt, plus a
+; picture of that frame (logs\glide_frame_N.bmp).
+;@end

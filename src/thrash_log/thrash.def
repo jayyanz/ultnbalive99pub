@@ -1,0 +1,36 @@
+LIBRARY voodoologa.dll
+EXPORTS
+    _THRASH_about@0=tthunk_0 @1
+    _THRASH_clearwindow@0=tthunk_1 @2
+    _THRASH_clip@16=tthunk_2 @3
+    _THRASH_drawline@8=tthunk_3 @4
+    _THRASH_drawlinemesh@12=tthunk_4 @5
+    _THRASH_drawlinestrip@8=tthunk_5 @6
+    _THRASH_drawpoint@4=tthunk_6 @7
+    _THRASH_drawpointmesh@12=tthunk_7 @8
+    _THRASH_drawpointstrip@8=tthunk_8 @9
+    _THRASH_drawquad@16=tthunk_9 @10
+    _THRASH_drawquadmesh@12=tthunk_10 @11
+    _THRASH_drawtri@12=tthunk_11 @12
+    _THRASH_drawtrifan@8=tthunk_12 @13
+    _THRASH_drawtrimesh@12=tthunk_13 @14
+    _THRASH_drawtristrip@8=tthunk_14 @15
+    _THRASH_flushwindow@0=tthunk_15 @16
+    _THRASH_idle@0=tthunk_16 @17
+    _THRASH_init@0=tthunk_17 @18
+    _THRASH_is@0=tthunk_18 @19
+    _THRASH_lockwindow@0=tthunk_19 @20
+    _THRASH_pageflip@0=tthunk_20 @21
+    _THRASH_readrect@20=tthunk_21 @22
+    _THRASH_restore@0=tthunk_22 @23
+    _THRASH_selectdisplay@4=tthunk_23 @24
+    _THRASH_setstate@8=tthunk_24 @25
+    _THRASH_settexture@4=tthunk_25 @26
+    _THRASH_setvideomode@12=tthunk_26 @27
+    _THRASH_sync@4=tthunk_27 @28
+    _THRASH_talloc@20=tthunk_28 @29
+    _THRASH_treset@0=tthunk_29 @30
+    _THRASH_tupdate@12=tthunk_30 @31
+    _THRASH_unlockwindow@4=tthunk_31 @32
+    _THRASH_window@4=tthunk_32 @33
+    _THRASH_writerect@20=tthunk_33 @34

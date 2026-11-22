@@ -1,0 +1,74 @@
+# ultnbalive99: what must never be committed (see CONTRIBUTING.md).
+# Checked again by hand before every commit.
+
+# ---- The game itself (EA): never in the repo
+Original Files/
+Original ISO Extract/
+Test Environment/
+ISO/
+Patch/
+NBAWIN.EXE
+*.[eE][xX][eE]
+*.[iI][sS][oO]
+*.[iI][mM][gG]
+
+# ---- Personal art and anything made from it
+Personal Art/
+*PERSONAL*
+mj.dat
+*.dat.zip
+
+# ---- Game-format and derived assets (any case)
+*.[bB][mM][pP]
+*.[fF][sS][hH]
+*.[vV][iI][vV]
+*.[dD][bB][fF]
+*.[cC][dD][xX]
+*.[dD][cC][tT]
+*.[aA][sS][fF]
+*.[bB][nN][kK]
+*.[hH][dD][rR]
+*.[mM][aA][dD]
+*.[cC][sS][vV]
+*.[lL][aA][yY]
+*.[dD][aA][tT]
+# decoded or spliced speech, MicroTalk test files
+*.[wW][aA][vV]
+*.[uU][tT][kK]
+*.[mM][tT]
+*.[pP][cC][mM]
+*.[rR][aA][wW]
+**/speech/
+# screenshots and frame captures
+*.[pP][nN][gG]
+*.[jJ][pP][gG]
+*.[jJ][pP][eE][gG]
+*.[gG][iI][fF]
+*.[tT][gG][aA]
+glide_frame_*
+
+# ---- Generated from the user's own exe (names are allowed, but generated output stays local)
+src/tools/out/
+
+# ---- Runtime output
+logs/
+crash/
+*.dmp
+nbatemp/
+nba99data/
+screenshots/
+
+# ---- Built output (releases go to GitHub Releases)
+dist/
+build/
+*.zip
+*.[dD][lL][lL]
+*.o
+*.obj
+*.res
+# generated at build time
+src/glide2x/gl_stubs.cpp
+
+# ---- Python caches
+__pycache__/
+*.pyc

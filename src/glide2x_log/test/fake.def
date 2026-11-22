@@ -1,0 +1,6 @@
+LIBRARY glide2x_real.dll
+EXPORTS
+    _grGlideGetVersion@4=grGlideGetVersion@4
+    _grSstQueryBoards@4=grSstQueryBoards@4
+    _grSstWinOpen@28=grSstWinOpen@28
+    _grBufferSwap@4=grBufferSwap@4

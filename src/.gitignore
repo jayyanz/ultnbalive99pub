@@ -1,0 +1,7 @@
+# Build output and runtime folders (see ../.gitignore and CONTRIBUTING.md)
+build/
+dist/
+logs/
+crash/
+nbatemp/
+tools/out/
