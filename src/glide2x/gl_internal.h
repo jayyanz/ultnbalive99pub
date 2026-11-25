@@ -189,13 +189,13 @@ typedef struct TexEntry {
 
 typedef struct {
     /* config */
-    int cfg_width, cfg_height, cfg_windowed, cfg_vsync, cfg_linear, cfg_cull_invert;
+    int cfg_width, cfg_height, cfg_windowed, cfg_vsync, cfg_linear;
     int cfg_fps_limit, cfg_log, cfg_dump_frame, cfg_menu_linear, cfg_overlay;
     int cfg_menu_fullres;           /* 99: menus over the full-resolution arena (gl_menulayer.inc) */
-    int cfg_judder;             /* [glide] JudderLog (Debug): logs\<session>\judder.log */
     volatile long overlay_toggles;
     int cfg_step_lock, cfg_display_lock, cfg_depth_wrap;
     int cfg_queue_skip;           /* [glide] QueueSkip (0.7.19) */
+    int cfg_pace_log;             /* [glide] PaceLog (0.3.0, Debug) */
     volatile long shot_req;         /* Page Down presses (0.7.12: screenshot at the next present) */
     int cfg_shots;                  /* [glide] Screenshots */
     volatile long trace_req;        /* Ctrl+F10 presses (Debug: trace the next frame's draws) */
@@ -204,11 +204,7 @@ typedef struct {
     int step_lock_on;                /* step lock active for the last frame */   /* Ctrl+F11 presses seen by the window procedure */
     float cfg_gamma;
     int cfg_crt;                /* CRT filter: 0 off, 1 auto, 2 sharp, 3 soft */
-    int cfg_widescreen;         /* [glide] Widescreen: matches use the whole width of a wide screen */
-    int ws;                     /* the render target is wide (widescreen on and the window wider than 4:3) */
-    int c43_x, c43_w;           /* the 4:3 area inside a wide render target, in its pixels */
-    int ws_layer;               /* 1: draws go across the full width (match 3D), 0: into the 4:3 area */
-    DWORD ws_swap_tick;         /* GetTickCount() of the last buffer swap (only matches swap) */
+    DWORD swap_tick;            /* GetTickCount() of the last buffer swap (the 3D arena swaps; the menus alone do not) */
 
     /* window / device */
     HWND hwnd;
@@ -266,13 +262,11 @@ extern CRITICAL_SECTION g_lock;
 /* logging */
 void glog(const char *fmt, ...);
 double gnow_ms(void);
-void jd_tri(const GrVertex *a, const GrVertex *b, const GrVertex *c, uint32_t caller);   /* gl_judder.inc */
 
 /* backend (gl_d3d.cpp) */
 int  d3d_open(HWND hwnd);
 void d3d_close(void);
 void d3d_flush(void);
-void d3d_ws_layer(void);
 void d3d_add_tris(const GVtx *v, int nverts);       /* multiple of 3 */
 void d3d_state_changed(void);
 void d3d_clear(FxU32 color, FxU32 alpha, FxU32 depth);

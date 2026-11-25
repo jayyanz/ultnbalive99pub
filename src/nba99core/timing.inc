@@ -1,19 +1,35 @@
 /*
  * Timing statistics (included by nba99core.cpp). See common/nba99_stats.h.
  *
- * 0.1 keeps only the parts of the NBA Live 98 timing code that need no game
- * addresses; frame pacing (stage 5) adds the rest once the 99 simulation step
- * and input task have been found.
  * - Game clock: every timer callback the game sets with timeSetEvent runs
  *   through our wrapper; the first one is counted as the game clock and the gap
- *   since the last call measured with QueryPerformanceCounter. (In 98 that was
- *   the 120 Hz clock; for 99 the timing log will tell.)
- * - Simulation steps are not counted yet (sim_steps stays 0), and game_v11 stays
- *   0 so glide2x never reads NBA Live 98 addresses in this game.
- * - Precise clock ([nba99] PreciseClock, default 0 in 0.1): the exe's
+ *   since the last call measured with QueryPerformanceCounter. (EA's timer
+ *   server, 0x548020: a one-shot timeSetEvent re-armed from GetTickCount, as in
+ *   NBA Live 98.)
+ * - Simulation steps (0.3.0): normalgameloop (0x4382C0) calls singleailoop
+ *   (0x437C80) once per simulation step. Its first 5 bytes (push ebx, ecx, esi,
+ *   edi, ebp) become a jump to a thunk that counts the step, does the same five
+ *   pushes and jumps back to 0x437C85. Counting only: no game state is written.
+ * - Input frames (0.3.0): the game's input task ctrlinterrupt (0x40D050, timer
+ *   task) counts ticks in 0x5FE4D8 and samples the controllers when it reaches
+ *   2 (4 in an online game), resetting it to 0: the same scheme as NBA Live 98's
+ *   0x42E4A0. It is registered at 0x40CECB (init_game_input) and removed at
+ *   0x40CF00 (release_game_input) with "mov eax, 0x40D050"; both immediates
+ *   point at our wrapper, which runs the task and counts a frame when 0x5FE4D8
+ *   is 0 afterwards. Unlike 98, the task does not run inside the timer
+ *   callback: EA's callback (0x547E50) only sets events (0x567470: SetEvent)
+ *   and the tasks run on the game's task thread. So the wrapper also wakes
+ *   glide2x's step lock itself (input_made): waking it only after the timer
+ *   callback missed the input frame whenever the task thread ran later, and
+ *   the frame waited a whole tick (pace log, 25 Nov 2026). Both counters are checked byte for byte first and left out
+ *   if the exe differs.
+ * - Precise clock ([nba99] PreciseClock=1, default since 0.3.0): the exe's
  *   GetTickCount import returns a millisecond clock from QueryPerformanceCounter
- *   and timer resolution is set to 1 ms. Off until stage 5 has measured the
- *   99 clock.
+ *   and timer resolution is set to 1 ms. EA's timer server re-arms its one-shot
+ *   timer from GetTickCount against a 16.16 deadline (0x6E4010), so with the
+ *   coarse Windows clock its ticks came 1 to 21 ms apart (0.3.0 measurements);
+ *   with this clock they are even, and glide2x's display lock can steer the
+ *   clock speed (nba99core_set_clock_rate). As in NBA Live 98.
  * - A sampler thread runs the machine report, publishes per-second figures for
  *   the overlay and, with [nba99] TimingLog=1 (default in the Debug build),
  *   writes one line per second to logs\timing.log with glide2x's frame figures.
@@ -70,6 +86,85 @@ __declspec(dllexport) void nba99core_set_clock_rate(double rate)
 }
 
 
+/* ---- simulation steps and input frames (0.3.0) ---- */
+#define STEP_VA 0x00437C80u          /* singleailoop */
+#define INPUT_TASK_VA 0x0040D050u     /* ctrlinterrupt */
+#define INPUT_REG_VA 0x0040CECBu      /* init_game_input: mov eax, 0x40D050 */
+#define INPUT_UNREG_VA 0x0040CF00u    /* release_game_input: mov eax, 0x40D050 */
+#define INPUT_COUNT_VA 0x005FE4D8u    /* ticks since the last sample */
+void step_thunk(void) __asm__("nba99_step_thunk");
+__asm__(".text\n"
+        "nba99_step_thunk:\n"
+        "  lock incl nba99_g_stats+8\n"
+        "  pushl %ebx\n"
+        "  pushl %ecx\n"
+        "  pushl %esi\n"
+        "  pushl %edi\n"
+        "  pushl %ebp\n"
+        "  jmp *nba99_step_back\n");
+uint32_t g_step_back __asm__("nba99_step_back") = STEP_VA + 5;
+
+volatile long *g_input_frames_p __asm__("nba99_input_frames_p") = &g_stats.input_frames;
+
+/* called by the input task wrapper (on the game's task thread) right after it counted an input
+   frame: wake the step lock now, not at the next timer callback (see timing_after_timer) */
+extern "C" void __cdecl input_made(void) __asm__("nba99_input_made");
+extern "C" void __cdecl input_made(void)
+{
+    LARGE_INTEGER q;
+    QueryPerformanceCounter(&q);
+    g_stats.input_qpc_lo = (unsigned long)q.LowPart;
+    g_stats.input_tick = g_stats.ticks;
+    if (g_stats.tick_event) SetEvent((HANDLE)g_stats.tick_event);
+}
+uint32_t g_input_task __asm__("nba99_input_task") = INPUT_TASK_VA;
+__asm__(".text\n"
+        "nba99_input_task_wrap:\n"
+        "  call *nba99_input_task\n"
+        "  pushfl\n"
+        "  cmpl $0, 0x005FE4D8\n"
+        "  jne 1f\n"
+        "  pushl %eax\n"
+        "  movl nba99_input_frames_p, %eax\n"
+        "  lock incl (%eax)\n"
+        "  popl %eax\n"
+        "  pushal\n"
+        "  call nba99_input_made\n"
+        "  popal\n"
+        "1:\n"
+        "  popfl\n"
+        "  ret\n");
+void input_task_wrap(void) __asm__("nba99_input_task_wrap");
+
+static int patch_code(uint32_t va, const uint8_t *expect, const uint8_t *with, int n)
+{
+    DWORD old;
+    if (memcmp((const void *)(uintptr_t)va, expect, n)) return 0;
+    if (!VirtualProtect((void *)(uintptr_t)va, n, PAGE_EXECUTE_READWRITE, &old)) return 0;
+    memcpy((void *)(uintptr_t)va, with, n);
+    VirtualProtect((void *)(uintptr_t)va, n, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), (void *)(uintptr_t)va, n);
+    return 1;
+}
+
+static void counters_setup(void)
+{
+    static const uint8_t step_expect[5] = { 0x53, 0x51, 0x56, 0x57, 0x55 };   /* push ebx, ecx, esi, edi, ebp */
+    static const uint8_t task_expect[5] = { 0xB8, 0x50, 0xD0, 0x40, 0x00 };   /* mov eax, 0x40D050 */
+    uint8_t j[5], m[5];
+    int32_t rel = (int32_t)((uintptr_t)step_thunk - (STEP_VA + 5));
+    uint32_t w = (uint32_t)(uintptr_t)input_task_wrap;
+    j[0] = 0xE9; memcpy(j + 1, &rel, 4);
+    if (patch_code(STEP_VA, step_expect, j, 5)) LOG("timing: counting simulation steps (singleailoop 0x%08X)", STEP_VA);
+    else LOG("timing: singleailoop code not as expected; simulation steps not counted");
+    m[0] = 0xB8; memcpy(m + 1, &w, 4);
+    if (!memcmp((const void *)(uintptr_t)INPUT_REG_VA, task_expect, 5) && !memcmp((const void *)(uintptr_t)INPUT_UNREG_VA, task_expect, 5) &&
+        patch_code(INPUT_REG_VA, task_expect, m, 5) && patch_code(INPUT_UNREG_VA, task_expect, m, 5))
+        LOG("timing: counting input frames (ctrlinterrupt 0x%08X wrapped)", INPUT_TASK_VA);
+    else
+        LOG("timing: input task registration not as expected; input frames not counted");
+}
+
 /* called from timer_thunk on the timer thread, after the game's callback */
 static void timing_after_timer(LPTIMECALLBACK cb)
 {
@@ -122,8 +217,8 @@ static DWORD WINAPI timing_thread(LPVOID arg)
         tlog("NBA Live 99 timing log, %s. One line per second.", NBA99_VERSION_LINE);
         tlog("machine: %s", g_machine);
         tlog("ticks: calls of the game's first timer callback and the gap between them (min avg max).");
-        tlog("steps and inp: not counted yet in NBA Live 99 (always 0).");
-        tlog("frames: frames shown, frame time (min avg max), frames over 50 ms (steps per frame not known yet).");
+        tlog("steps: simulation steps per second (singleailoop); inp: input frames per second (ctrlinterrupt samples).");
+        tlog("frames: frames shown, frame time (min avg max), frames that showed 0/1/2/3+ new steps, frames over 50 ms.");
     }
     QueryPerformanceCounter(&t0);
     for (;;) {
@@ -153,7 +248,7 @@ static DWORD WINAPI timing_thread(LPVOID arg)
             if (g_stats.r_seq != r_seq_logged || (g_stats.r_seq && !quiet++)) {
                 if (g_stats.r_seq != r_seq_logged) quiet = 0;
                 r_seq_logged = g_stats.r_seq;
-                _snprintf(fr, sizeof fr, "frames %5.1f/s  frame ms %5.1f %5.1f %5.1f  steps/frame 0:%-3ld 1:%-3ld 2:%-3ld 3+:%-3ld  >50ms %ld",
+                _snprintf(fr, sizeof fr, "frames %5.1f/s  frame ms %5.1f %5.1f %5.1f  steps/frame %ld/%ld/%ld/%ld  >50ms %ld",
                           g_stats.r_fps, g_stats.r_ft_min, g_stats.r_ft_avg, g_stats.r_ft_max, g_stats.r_spf[0],
                           g_stats.r_spf[1], g_stats.r_spf[2], g_stats.r_spf[3], g_stats.r_long);
             } else if (g_stats.r_seq) {
@@ -176,9 +271,9 @@ static DWORD WINAPI timing_thread(LPVOID arg)
 static void timing_setup(void)
 {
     HANDLE h;
-    g_stats.crt_mode = -1;   /* set by the options menu when the CRT filter is changed */
     g_stats.tick_event = CreateEventA(NULL, FALSE, FALSE, NULL);
-    if (ini_int("PreciseClock", 0)) {
+    counters_setup();
+    if (ini_int("PreciseClock", 1)) {
         LARGE_INTEGER q;
         g_tc_base = GetTickCount();
         QueryPerformanceCounter(&q);

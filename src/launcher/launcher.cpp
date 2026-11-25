@@ -27,12 +27,12 @@
  *   WatchGame=1           Debug build: report a crash (exception exit code)
  *                         with a message when the game closes
  *
- * Restart: both builds wait for the game to close. If the core asked for a
- * restart (nba99data\restart.req; used by later settings screens) and the game
- * exited cleanly, the launcher starts it again with the same arguments.
+ * Both builds wait for the game to close (no window, no CPU use) and log its
+ * exit code; the Debug build reports a crash with a message.
  *
- * Both builds check that nba99core.dll and glide2x.dll carry the same version
- * and build (Main or Debug) as the launcher, and warn if not.
+ * Both builds check that nba99core.dll, glide2x.dll and eacsnd.dll carry the
+ * same version and build (Main or Debug) as the launcher, and warn if not (EA's
+ * own eacsnd.dll, left in place of ours, has no version).
  */
 #define WIN32_LEAN_AND_MEAN
 #include "nba99_cxx.h"   /* C++ build settings, first (0.7.15) */
@@ -85,11 +85,11 @@ static void file_version(const char *name, char *out, int cap)
 /* warn when our files come from different versions or builds; returns 0 to stop */
 static int check_versions(void)
 {
-    static const char *files[] = { "nba99core.dll", "glide2x.dll" };
+    static const char *files[] = { "nba99core.dll", "glide2x.dll", "eacsnd.dll" };   /* EA's eacsnd.dll has no version: warned */
     char msg[1500], v[128];
     int i, bad = 0, len;
     len = _snprintf(msg, sizeof msg, "These files do not match this launcher (%s):\n\n", NBA99_VERSION_LINE);
-    for (i = 0; i < 2; i++) {
+    for (i = 0; i < 3; i++) {
         char path[MAX_PATH];
         _snprintf(path, sizeof path, "%s%s", g_dir, files[i]);
         file_version(files[i], v, sizeof v);
@@ -291,7 +291,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     SIZE_T wrote;
     HANDLE ready;
     FARPROC loadlib;
-    char *s, marker[MAX_PATH];
+    char *s;
     DWORD wr;
     int ini_made;
     (void)inst; (void)prev; (void)cmd; (void)show;
@@ -333,18 +333,11 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     _snprintf(cmdline, sizeof cmdline, "\"%s\" %s %s", exe, args, passthrough_args());
     cmdline[sizeof cmdline - 1] = 0;
 
-    /* the core offers "restart now" only when we are here to start the game again */
-    SetEnvironmentVariableA("NBA99_RESTART_OK", "1");
-    _snprintf(marker, sizeof marker, "%snba99data\\restart.req", g_dir);
-    marker[sizeof marker - 1] = 0;
-    DeleteFileA(marker);   /* a stale request never restarts anything */
-
-    for (;;) {
+    {
         DWORD code = 0;
         {   /* each game start logs to its own folder (logs\<date>_<time>_<version>_<build>_<PC>) */
-            static int starts;
             char ses[128];
-            if (starts++) nba99_log_session_new(ses, sizeof ses); else nba99_log_session(ses, sizeof ses);
+            nba99_log_session(ses, sizeof ses);
             lg("logs for this start: logs\\%s", ses);
         }
         lg("starting: %s", cmdline);
@@ -381,8 +374,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
         }
         lg("game started (process %lu), core %s", pi.dwProcessId, wr == WAIT_OBJECT_0 ? "ready" : "did not report in");
 
-        /* Both builds wait for the game (no window, no CPU use), so a "restart now" from the
-           settings screens can start it again. */
+        /* both builds wait for the game (no window, no CPU use) and log how it closed */
         {
 #if NBA99_DEBUG
             FILETIME start;
@@ -416,12 +408,6 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
         CloseHandle(pi.hProcess);
         if (ready) CloseHandle(ready);
         ready = NULL;
-
-        /* restart requested from the settings screens: once per request, only after a clean exit */
-        if (!file_exists(marker)) break;
-        DeleteFileA(marker);
-        if (code != 0) { lg("restart requested but the game did not exit cleanly (0x%08lx): not restarted", code); break; }
-        lg("restart requested from the settings screens: starting the game again");
     }
     if (g_log != INVALID_HANDLE_VALUE) CloseHandle(g_log);
     return 0;

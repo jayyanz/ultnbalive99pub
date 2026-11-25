@@ -80,7 +80,7 @@ static void ml_on_read(int buf, int idx)
     uint16_t *s = G.shadow[buf];
     int x, y;
     if (!ml_ready()) return;
-    if (GetTickCount() - G.ws_swap_tick >= 1000) { ml_ok[idx] = 0; return; }   /* no live 3D */
+    if (GetTickCount() - G.swap_tick >= 1000) { ml_ok[idx] = 0; return; }   /* no live 3D */
     ID3D11DeviceContext_CopyResource(ctx, (ID3D11Resource *)ml_snap_tex[idx], (ID3D11Resource *)rt_tex[idx]);
     ml_flip ^= 0x0821;
     for (y = 0; y < FB_H; y++)
@@ -130,7 +130,7 @@ static int ml_on_write(int buf, int idx)
              ml_n, changed, menu, (long)FB_W * FB_H - menu);
     ID3D11DeviceContext_CopyResource(ctx, (ID3D11Resource *)rt_tex[idx], (ID3D11Resource *)ml_snap_tex[idx]);
     u[0] = G.cfg_menu_linear ? 1 : 0;
-    util_pass(ps_menu, rt_rtv[idx], NULL, G.c43_x, 0, G.c43_w, G.rt_h, ds_off, ml_srv, ml_snap_srv[idx], smp_point,
+    util_pass(ps_menu, rt_rtv[idx], NULL, 0, 0, G.rt_w, G.rt_h, ds_off, ml_srv, ml_snap_srv[idx], smp_point,
               NULL, NULL, u, NULL);
     G.gpu_newer[buf] = 0;
     return 1;

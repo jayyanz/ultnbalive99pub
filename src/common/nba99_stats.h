@@ -1,23 +1,32 @@
 /*
- * Timing statistics shared between nba99core.dll (game clock and simulation
- * side) and glide2x.dll (frames). nba99core owns the struct and exports
+ * Timing statistics shared between nba99core.dll (game clock side) and
+ * glide2x.dll (frames). nba99core owns the struct and exports
  * nba99core_stats(); glide2x looks it up at run time and works without it.
  *
  * Totals only ever count up. The "sec_" and "r_" blocks are the last full
  * second, published by the side that measures them; *_seq goes up by one on
  * every publish.
+ *
+ * Version 1 for NBA Live 99 (22 Nov 2026): NBA Live 98's version 11 struct with
+ * the fields for 98-only features taken out (options menu, gamepad menu box,
+ * widescreen, distance detail, judder log, pause screens). The frame pacing
+ * fields stay until the release 3 check decides whether 99 needs the 98 locks.
+ * Version 2 (0.3.0): simulation steps and input frames are counted in 99
+ * (nba99core timing.inc); r_spf (steps shown per frame) added at the end.
+ * Version 3 (0.3.0): input_qpc_lo and input_tick, when the newest input frame was made (glide2x pace log);
+ * tick_event is now also set the moment an input frame is made.
  */
 #ifndef NBA99_STATS_H
 #define NBA99_STATS_H
 #include <stdint.h>
 
-#define NBA99_STATS_VERSION 11
+#define NBA99_STATS_VERSION 3
 
 typedef struct nba99_stats {
     uint32_t version;               /* NBA99_STATS_VERSION */
     uint32_t size;                  /* sizeof(nba99_stats) */
-    volatile long sim_steps;        /* offset 8: game simulation steps (60 per game second), total */
-    volatile long ticks;            /* game timer callbacks (120 Hz clock), total */
+    volatile long sim_steps;        /* offset 8: game simulation steps (singleailoop calls), total */
+    volatile long ticks;            /* calls of the game's first timer callback, total */
     volatile long presents;         /* frames shown, total (glide2x) */
 
     /* game side, last full second (nba99core) */
@@ -30,48 +39,21 @@ typedef struct nba99_stats {
     volatile long r_seq;
     float r_fps;
     float r_ft_min, r_ft_avg, r_ft_max;            /* ms between presents */
-    long r_spf[4];                  /* frames that showed 0, 1, 2, 3+ new simulation steps */
     long r_long;                    /* frames longer than 50 ms */
 
-    /* version 2: step lock (glide2x waits for the game clock before presenting) */
-    volatile long ticks_done;       /* game timer callbacks finished (input frames are made inside them) */
-    void *tick_event;               /* auto-reset event, set after every finished callback */
+    /* frame pacing from NBA Live 98 (StepLock, DisplayLock, QueueSkip, PreciseClock): on since 0.3.0 */
+    volatile long ticks_done;       /* game timer callbacks finished */
+    void *tick_event;               /* auto-reset event, set after every finished callback and when an input frame is made */
     volatile long precise_clock;    /* 1 when the game's GetTickCount is our high-resolution clock */
-
-    /* version 3: display lock (glide2x steers the game clock so frames land mid-refresh) */
     volatile long disp_lock;        /* 1 while the display lock is steering */
     float disp_hz;                  /* display refresh rate (DWM) */
     float clock_rate;               /* game clock speed, 1.0 = real time (set by nba99core_set_clock_rate) */
     float r_ph_min, r_ph_avg, r_ph_max;   /* last second: present time within the refresh interval, 0..1 */
-
-    /* version 4: live settings from the options menu (nba99core writes, glide2x reads every frame) */
-    volatile long crt_mode;         /* CRT filter: -1 = not set (glide2x uses its ini value), 0 off, 1 auto, 2 sharp, 3 soft */
-
-    /* version 5: gamepad menu navigation (nba99core writes from the menu poll, glide2x draws the box) */
-    volatile long nav_box[4];       /* selected menu object in 640x480 game pixels: x, y, w, h (w 0 = no box) */
-    volatile long nav_time;         /* GetTickCount() of the last update; the box is hidden once this is 250 ms old */
-
-    /* version 6: widescreen matches (Hor+) */
-    float ws_aspect;                /* glide2x: aspect of the picture it draws matches into (0 = widescreen off) */
-    volatile long draw_2d;          /* nba99core: 1 from the match HUD call until glide2x's next buffer swap */
-    float ws_fov;                   /* nba99core: horizontal half-angle written for the match camera (turns), 0 = original */
-
-    /* version 7: step lock on input frames (0.7.6) */
-    volatile long input_frames;     /* nba99core: input frames the game has made (one per simulation step), total */
-
-    /* version 8: distance detail (0.7.8) */
-    volatile long render_h;         /* glide2x: height in pixels the match 3D is drawn at */
-
-    /* version 9: judder log (0.7.10, Debug) */
-    volatile long game_v11;         /* nba99core: 1 = the verified v1.1 exe (glide2x may read its camera and player data) */
-    volatile long io_main_us;       /* nba99core: time in the main thread's file calls, total, microseconds */
-    volatile long io_main_n;        /* nba99core: number of those calls, total */
-
-    /* version 10: widescreen from the first match frame (0.7.11) */
-    volatile long match_3d;         /* nba99core: 1 from the match camera setup or world render until glide2x's next buffer swap */
-
-    /* version 11: pause screens full width (0.7.14) */
-    volatile long match_state;      /* nba99core: the front-end screen state (0x5C8284) the last match world render ran in, 0 = none */
+    volatile long input_frames;     /* input frames the game has made (ctrlinterrupt samples), total */
+    long r_spf[4];                  /* last second (glide2x): frames that showed 0, 1, 2, 3+ new simulation steps */
+    volatile unsigned long input_qpc_lo;   /* low 32 bits of QueryPerformanceCounter when the newest input
+                                              frame was made */
+    volatile long input_tick;       /* 'ticks' at that callback */
 } nba99_stats;
 
 /* exported by nba99core: run the game clock at 'rate' x real time from now on */

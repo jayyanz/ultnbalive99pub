@@ -16,8 +16,21 @@
  * delete, find, volume and drive queries), split into main thread and other
  * threads, with the files the main thread opened. Once a second with slow
  * frames, one block is written to the log.
+ *
+ * In a match (simulation steps counted in the last half second) the limit is
+ * 22 ms instead (0.3.0): with the frame pacing on, every match frame should
+ * take 15 to 18 ms, and the pace log showed a few frames of 26 to 74 ms where
+ * the game itself was busy.
+ *
+ * File totals (0.3.0, for the network-drive work): once a minute, whether or
+ * not frames were slow, a "minute" block with every file call counted and
+ * timed (main thread and other threads) and the 12 files opened most often
+ * that minute with their open count and time, so the per-file costs NBA Live
+ * 98 had (volume and free-space queries on every open, small temp file
+ * writes, speech bank reads) show up in 99 if they are there.
  */
 #define PROF_SLOW_MS 40.0
+#define PROF_SLOW_MATCH_MS 22.0   /* in a match (steps running): every frame should be 16.7 ms (0.3.0) */
 #define PROF_SITES 64
 
 typedef struct { uint32_t a, b; long n; } prof_site;
@@ -27,6 +40,11 @@ enum { IO_OPEN, IO_READ, IO_WRITE, IO_SEEK, IO_FLUSH, IO_COPY, IO_DELETE, IO_FIN
 static const char *k_io_name[IO_N] = { "open", "read", "write", "seek", "flush", "copy", "delete", "find", "volume",
                                        "diskfree", "drivetype", "move" };
 static struct { volatile long n[2]; volatile double ms[2]; volatile double bytes[2]; } g_io[IO_N];   /* [0] main, [1] others */
+static struct { long n[2]; double ms[2]; double bytes[2]; } g_io_min[IO_N];   /* this minute */
+#define PROF_NAMES 96
+static struct { char name[56]; long n; double ms; } g_names[PROF_NAMES];       /* files opened this minute */
+static int g_nnames;
+static long g_names_other;
 static HANDLE g_plog = INVALID_HANDLE_VALUE;
 static CRITICAL_SECTION g_prof_cs;
 static char g_prof_files[1024];
@@ -58,14 +76,13 @@ static double qpc_ms(void)
 static void io_add(int k, double ms, double bytes)
 {
     int o = GetCurrentThreadId() != g_known_tid[0];
-    if (!o) {   /* judder log (glide2x): main-thread file time per frame */
-        InterlockedExchangeAdd(&g_stats.io_main_us, (long)(ms * 1000.0));
-        InterlockedIncrement(&g_stats.io_main_n);
-    }
     EnterCriticalSection(&g_prof_cs);
     g_io[k].n[o]++;
     g_io[k].ms[o] += ms;
     g_io[k].bytes[o] += bytes;
+    g_io_min[k].n[o]++;
+    g_io_min[k].ms[o] += ms;
+    g_io_min[k].bytes[o] += bytes;
     LeaveCriticalSection(&g_prof_cs);
 }
 
@@ -73,6 +90,21 @@ static void io_add(int k, double ms, double bytes)
 static void prof_open(const char *name, double ms)
 {
     io_add(IO_OPEN, ms, 0);
+    {   /* per-minute count by file (any thread); path below the game folder when it is in it */
+        const char *rel = name;
+        size_t dl = strlen(g_exe_dir);
+        int i;
+        if (!_strnicmp(name, g_exe_dir, dl)) rel = name + dl;
+        EnterCriticalSection(&g_prof_cs);
+        for (i = 0; i < g_nnames && _stricmp(g_names[i].name, rel); i++) {}
+        if (i == g_nnames && g_nnames < PROF_NAMES) {
+            lstrcpynA(g_names[i].name, rel, sizeof g_names[i].name);
+            g_names[i].n = 0; g_names[i].ms = 0;
+            g_nnames++;
+        }
+        if (i < PROF_NAMES) { g_names[i].n++; g_names[i].ms += ms; } else g_names_other++;
+        LeaveCriticalSection(&g_prof_cs);
+    }
     if (GetCurrentThreadId() == g_known_tid[0]) {
         const char *b = strrchr(name, '\\');
         size_t l;
@@ -135,14 +167,53 @@ static void prof_threads(char *line, int cap, int print)
     }
 }
 
+/* the minute's file totals and most-opened files; resets them */
+static void prof_minute(double t)
+{
+    char line[1500];
+    int o, k, len, any = 0;
+    EnterCriticalSection(&g_prof_cs);
+    for (k = 0; k < IO_N; k++) if (g_io_min[k].n[0] || g_io_min[k].n[1]) any = 1;
+    if (any) {
+        plog("==== minute to %.0f s: file calls", t);
+        for (o = 0; o < 2; o++) {
+            len = _snprintf(line, sizeof line, "  %s:", o ? "other threads" : "main thread");
+            for (k = 0; k < IO_N; k++)
+                if (g_io_min[k].n[o])
+                    len += _snprintf(line + len, sizeof line - len, " %s %ld x %.1f ms", k_io_name[k], g_io_min[k].n[o],
+                                     g_io_min[k].ms[o]);
+            if (g_io_min[IO_READ].bytes[o] > 0)
+                len += _snprintf(line + len, sizeof line - len, " | read %.0f KB", g_io_min[IO_READ].bytes[o] / 1024);
+            if (g_io_min[IO_WRITE].bytes[o] > 0)
+                len += _snprintf(line + len, sizeof line - len, " | written %.0f KB", g_io_min[IO_WRITE].bytes[o] / 1024);
+            plog("%s", line);
+        }
+        len = _snprintf(line, sizeof line, "  most opened:");
+        for (k = 0; k < 12; k++) {
+            int i, best = -1;
+            for (i = 0; i < g_nnames; i++) if (g_names[i].n && (best < 0 || g_names[i].n > g_names[best].n)) best = i;
+            if (best < 0) break;
+            len += _snprintf(line + len, sizeof line - len, " %s %ld x %.1f ms,", g_names[best].name, g_names[best].n,
+                             g_names[best].ms);
+            g_names[best].n = 0;
+        }
+        if (g_names_other) len += _snprintf(line + len, sizeof line - len, " (%ld opens of other files)", g_names_other);
+        plog("%s", line);
+    }
+    memset(g_io_min, 0, sizeof g_io_min);
+    g_nnames = 0;
+    g_names_other = 0;
+    LeaveCriticalSection(&g_prof_cs);
+}
+
 static DWORD WINAPI prof_thread(LPVOID arg)
 {
     static uint32_t stk[4096];
     static prof_site sites[PROF_SITES];
     static prof_mod mods[24];
     HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, g_known_tid[0]);
-    long last_pres = 0, samples = 0, slow_frames = 0, nsites = 0, nmods = 0, other_sites = 0;
-    double last_change = qpc_ms(), sec_start = qpc_ms(), worst = 0;
+    long last_pres = 0, last_steps = 0, samples = 0, slow_frames = 0, nsites = 0, nmods = 0, other_sites = 0;
+    double last_change = qpc_ms(), last_step_ms = 0, sec_start = qpc_ms(), min_start = qpc_ms(), worst = 0;
     int in_slow = 0, i, j;
     (void)arg;
     if (!th) { plog("could not open the main thread; profiler off"); return 0; }
@@ -157,7 +228,8 @@ static DWORD WINAPI prof_thread(LPVOID arg)
             in_slow = 0;
         }
         since = now - last_change;
-        if (since > PROF_SLOW_MS && last_pres) {
+        if (g_stats.sim_steps != last_steps) { last_steps = g_stats.sim_steps; last_step_ms = now; }
+        if (since > (now - last_step_ms < 500.0 ? PROF_SLOW_MATCH_MS : PROF_SLOW_MS) && last_pres) {
             CONTEXT c;
             MEMORY_BASIC_INFORMATION mi;
             SIZE_T n = 0;
@@ -255,6 +327,10 @@ static DWORD WINAPI prof_thread(LPVOID arg)
             worst = 0;
             sec_start = now;
         }
+        if (now - min_start >= 60000.0) {
+            prof_minute(now_ms() / 1000.0);
+            min_start = now;
+        }
     }
     return 0;
 }
@@ -268,9 +344,11 @@ static void prof_start(void)
     InitializeCriticalSection(&g_prof_cs);
     nba99_log_path(g_exe_dir, "profile.log", path, sizeof path);
     g_plog = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    plog("NBA Live 99 stall profile, %s. A block for every second with frames over %.0f ms.", NBA99_VERSION_LINE, PROF_SLOW_MS);
+    plog("NBA Live 99 stall profile, %s. A block for every second with frames over %.0f ms (%.0f ms in a match).",
+         NBA99_VERSION_LINE, PROF_SLOW_MS, PROF_SLOW_MATCH_MS);
     plog("in: where the main thread was (module); game code: NBAWIN.EXE address it was in or called from, and its caller;");
     plog("files: the game's file calls in that second (count x total time).");
+    plog("Once a minute: all file calls that minute and the files opened most often (\"minute\" blocks).");
 #define HOOK(fn) o_##fn = (fn##_fn)iat_hook(exe, "KERNEL32.dll", #fn, (void *)p_##fn); if (!o_##fn) o_##fn = fn;
     HOOK(ReadFile) HOOK(WriteFile) HOOK(SetFilePointer) HOOK(FlushFileBuffers) HOOK(CopyFileA) HOOK(DeleteFileA)
     HOOK(FindFirstFileA) HOOK(GetVolumeInformationA) HOOK(GetDiskFreeSpaceA) HOOK(GetDriveTypeA) HOOK(MoveFileA)

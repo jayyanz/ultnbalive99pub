@@ -63,6 +63,7 @@ dist/
 build/
 *.zip
 *.[dD][lL][lL]
+!src/third_party/SDL3.dll
 *.o
 *.obj
 *.res

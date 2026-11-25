@@ -58,7 +58,7 @@ static ID3D11ShaderResourceView *lfb_srv;
 static ID3D11PixelShader *ps_menu;
 static void ml_create(void);
 static void ml_release(void);
-static int g_probe_all = -1;   /* Debug: NBA99_LFB_PROBE=1 logs every LFB write and every swap after a gap */
+static int g_probe_all;   /* Debug: NBA99_LFB_PROBE=1 logs every LFB write and every LFB read (set in d3d_open) */
 static ID3D11Texture2D *rb_tex, *rb_staging;
 static ID3D11RenderTargetView *rb_rtv;
 
@@ -66,11 +66,10 @@ static ID3D11RenderTargetView *rb_rtv;
 #define PAL_ROWS 1024
 static ID3D11Texture2D *pal_tex;
 static ID3D11PixelShader *ps_crt_down, *ps_crt_hyllian, *ps_crt_vga;   /* CRT filter (optional) */
-static ID3D11PixelShader *ps_navbox;   /* gamepad menu selection frame (optional) */
 static ID3D11Texture2D *crt_tex;
 static ID3D11RenderTargetView *crt_rtv;
 static ID3D11ShaderResourceView *crt_srv;
-static int crt_w;   /* width of the CRT source picture (480 lines): 640, or wider in widescreen (0.7.9) */
+static int crt_w;   /* width of the CRT source picture (480 lines, 640 wide) */
 static ID3D11ShaderResourceView *pal_srv;
 static struct { uint64_t hash; int used; } pal_map[PAL_ROWS];
 static int pal_next;
@@ -162,10 +161,6 @@ static int create_shaders(void)
     CRT("ps_crt_hyllian", &ps_crt_hyllian);
     CRT("ps_crt_vga", &ps_crt_vga);
 #undef CRT
-    if ((b = compile(k_hlsl_util, "ps_navbox", "ps_4_0")) != NULL) {
-        ID3D11Device_CreatePixelShader(dev, ID3D10Blob_GetBufferPointer(b), ID3D10Blob_GetBufferSize(b), NULL, &ps_navbox);
-        REL(b);
-    }
     if (!ps_crt_down || !ps_crt_hyllian || !ps_crt_vga) glog("CRT filter: shaders not available, filter off");
     return vs_main && ps_main && layout && vs_full && ps_clear && ps_lfb && ps_readback && ps_present;
 }
@@ -265,43 +260,21 @@ static void fit43(int w, int h, int *ow, int *oh)
     else { *ow = w; *oh = w * 3 / 4; }
 }
 
-/* where the image goes inside the current output: the render target's shape, centred
-   (4:3 pillarbox/letterbox, or the whole of a wide window in widescreen) */
+/* where the image goes inside the current output: 4:3, centred (pillarbox or letterbox) */
 static void compute_view(void)
 {
-    if (G.ws && G.rt_h > 0) {
-        if ((double)G.out_w * G.rt_h >= (double)G.rt_w * G.out_h) {
-            G.view_h = G.out_h; G.view_w = (int)((double)G.out_h * G.rt_w / G.rt_h + 0.5);
-        } else {
-            G.view_w = G.out_w; G.view_h = (int)((double)G.out_w * G.rt_h / G.rt_w + 0.5);
-        }
-    } else {
-        fit43(G.out_w, G.out_h, &G.view_w, &G.view_h);
-    }
+    fit43(G.out_w, G.out_h, &G.view_w, &G.view_h);
     G.view_x = (G.out_w - G.view_w) / 2;
     G.view_y = (G.out_h - G.view_h) / 2;
 }
 
-/* internal render size: Width/Height from the ini (made 4:3), else the 4:3 part of the window.
-   Widescreen (0.7.5): the same height, as wide as the window's shape; the game's 640x480
-   screen then sits in the middle (c43_x, c43_w) and match 3D is spread over the full width. */
+/* internal render size: Width/Height from the ini (made 4:3), else the 4:3 part of the window */
 static void compute_layout(void)
 {
     if (G.cfg_width > 0 && G.cfg_height > 0) fit43(G.cfg_width, G.cfg_height, &G.rt_w, &G.rt_h);
     else fit43(G.out_w, G.out_h, &G.rt_w, &G.rt_h);
     if (G.rt_w < FB_W) { G.rt_w = FB_W; G.rt_h = FB_H; }
-    G.ws = 0;
-    G.c43_x = 0; G.c43_w = G.rt_w;
-    if (G.cfg_widescreen && G.out_h > 0 && G.out_w * 3 > G.out_h * 4 + G.out_h / 50) {
-        int w = (int)((double)G.rt_h * G.out_w / G.out_h + 0.5) & ~1;
-        if (w > G.rt_w && w <= 16384) {
-            G.ws = 1;
-            G.c43_w = G.rt_w;
-            G.rt_w = w;
-            G.c43_x = (G.rt_w - G.c43_w) / 2;
-        }
-    }
-    G.sx = (float)G.c43_w / FB_W;
+    G.sx = (float)G.rt_w / FB_W;
     G.sy = (float)G.rt_h / FB_H;
     compute_view();
 }
@@ -333,6 +306,7 @@ static void front_flush_stop(void);
 
 int d3d_open(HWND hwnd)
 {
+    if (NBA99_DEBUG) { char v[4]; g_probe_all = GetEnvironmentVariableA("NBA99_LFB_PROBE", v, sizeof v) > 0; }
     DXGI_SWAP_CHAIN_DESC sd;
     D3D_FEATURE_LEVEL fl, want[] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0 };
     HRESULT hr;
@@ -445,14 +419,12 @@ void d3d_release_textures(void)
 
 static void ov_release(void);
 
-static void present_stats_release(void);
 
 void d3d_close(void)
 {
     int i;
     if (!dev) return;
     front_flush_stop();
-    present_stats_release();
     if (ctx) ID3D11DeviceContext_ClearState(ctx);
     d3d_release_textures();
     ov_release();
@@ -465,7 +437,7 @@ void d3d_close(void)
     REL(lfb_srv); REL(lfb_tex); REL(rb_rtv); REL(rb_tex); REL(rb_staging);
     ml_release();
     REL(pal_srv); REL(pal_tex);
-    REL(crt_rtv); REL(crt_srv); REL(crt_tex); REL(ps_crt_down); REL(ps_crt_hyllian); REL(ps_crt_vga); REL(ps_navbox);
+    REL(crt_rtv); REL(crt_srv); REL(crt_tex); REL(ps_crt_down); REL(ps_crt_hyllian); REL(ps_crt_vga);
     REL(vb); REL(cb_main); REL(cb_util);
     REL(rs); REL(smp_point); REL(smp_linear); REL(ds_clear); REL(ds_off); REL(bs_off);
     REL(vs_main); REL(vs_full); REL(ps_main); REL(ps_clear); REL(ps_lfb); REL(ps_readback); REL(ps_present);
@@ -575,14 +547,12 @@ static void set_target(int buf)
     ID3D11DeviceContext_RSSetViewports(ctx, 1, &vp);
 }
 
-/* the clip window in render target pixels (widescreen: full width for match 3D, else the 4:3 area) */
+/* the clip window in render target pixels */
 static void clip_rect(D3D11_RECT *r)
 {
-    float sx = G.sx, ox = (float)G.c43_x;
-    if (G.ws && G.ws_layer) { sx = (float)G.rt_w / FB_W; ox = 0; }
-    r->left = (LONG)floorf(G.clip[0] * sx + ox + 0.5f);
+    r->left = (LONG)floorf(G.clip[0] * G.sx + 0.5f);
     r->top = (LONG)floorf(G.clip[1] * G.sy + 0.5f);
-    r->right = (LONG)floorf(G.clip[2] * sx + ox + 0.5f);
+    r->right = (LONG)floorf(G.clip[2] * G.sx + 0.5f);
     r->bottom = (LONG)floorf(G.clip[3] * G.sy + 0.5f);
 }
 
@@ -591,36 +561,6 @@ static void set_scissor(void)
     D3D11_RECT r;
     clip_rect(&r);
     ID3D11DeviceContext_RSSetScissorRects(ctx, 1, &r);
-}
-
-/* widescreen: which way the next draw goes. Full width (1) for 3D in a match: buffer swaps
-   seen in the last half second (the front end never swaps) or nba99core's match_3d flag (set at the match
-   camera setup and each world render, so the first frame before the match's first swap counts; 0.7.11),
-   the HUD not started yet
-   (nba99core sets draw_2d at the match HUD call; we clear it at the swap). Since 0.7.9 the CRT
-   filter is widescreen too (its source is then a wide 480-line picture). Anything else (HUD, menus, front-end 3D) goes into
-   the 4:3 area. A change starts a new batch, since the scissor differs. */
-static long g_wsp_draws[2];   /* Debug probe (0.7.11): draws per layer since the last swap */
-void d3d_ws_layer(void)
-{
-    nba99_stats *st = core_stats();
-    /* 0.7.14: while the front end is still in the screen state the match's world render ran in (the pause
-       menu and its sub-screens, which redraw the darkened arena and the scoreboard in 3D without a world
-       render and without regular swaps), the 3D is the match too */
-    int in_match = st && st->game_v11 && st->match_state && *(volatile unsigned char *)(uintptr_t)0x5C8284 == st->match_state;
-    int l = G.ws && (GetTickCount() - G.ws_swap_tick < 500 || (st && st->match_3d) || in_match) && !(st && st->draw_2d);
-    g_wsp_draws[l]++;
-    if (l != G.ws_layer) {
-        static int n;
-        d3d_flush();
-        G.ws_layer = l;
-        G.dirty = 1;
-        if (n < 12) {
-            n++;
-            glog("widescreen: draws now %s (swap %lu ms ago, HUD flag %ld, CRT %d)", l ? "full width (match 3D)" : "in the 4:3 area",
-                 (unsigned long)(GetTickCount() - G.ws_swap_tick), st ? st->draw_2d : -1L, crt_mode());
-        }
-    }
 }
 
 static void fill_tex_constants(int t, uint32_t *texinfo, float *su, float *sv)
@@ -761,9 +701,9 @@ static void util_pass(ID3D11PixelShader *ps, ID3D11RenderTargetView *rtv, ID3D11
 }
 
 #include "gl_overlay.inc"
-#include "gl_judder.inc"          /* Debug judder log (0.7.10) */
 #include "gl_shot.inc"            /* Page Down screenshots (0.7.12) */
 #include "gl_menulayer.inc"       /* 99: menus over the full-resolution arena */
+#include "gl_pace.inc"            /* Debug pace log (0.3.0) */
 
 void d3d_clear(FxU32 color, FxU32 alpha, FxU32 depth)
 {
@@ -778,7 +718,6 @@ void d3d_clear(FxU32 color, FxU32 alpha, FxU32 depth)
     c[2] = (color & 255) / 255.0f;
     c[3] = (alpha & 255) / 255.0f;
     p[0] = (depth & 0xFFFF) / 65535.0f;
-    if (G.ws) d3d_ws_layer();
     clip_rect(&r);
     if (r.left <= 0 && r.top <= 0 && r.right >= G.rt_w && r.bottom >= G.rt_h) {
         if (G.color_mask_rgb) ID3D11DeviceContext_ClearRenderTargetView(ctx, rt_rtv[idx], c);
@@ -803,30 +742,17 @@ void d3d_lfb_upload(int buf, int x, int y, int w, int h)
     (void)x; (void)y; (void)w; (void)h;   /* always the whole frame: 600 KB, cheap */
     if (!ctx) return;
     d3d_flush();
-    if (GetTickCount() - G.ws_swap_tick >= 500) {   /* front end or pause: no match 3D in flight */
-        nba99_stats *st = core_stats();
-        if (st) st->match_3d = 0;
-    }
     if (ml_on_write(buf, idx)) return;
-    if (NBA99_DEBUG && g_probe_all > 0 && GetTickCount() - G.ws_swap_tick < 30000)
-        glog("LFB write: whole 640x480 picture into the 4:3 area (target %d, swap %lu ms ago)", idx,
-             (unsigned long)(GetTickCount() - G.ws_swap_tick));
+    if (NBA99_DEBUG && g_probe_all > 0 && GetTickCount() - G.swap_tick < 30000)
+        glog("LFB write: whole 640x480 picture (target %d, swap %lu ms ago)", idx,
+             (unsigned long)(GetTickCount() - G.swap_tick));
     if (FAILED(ID3D11DeviceContext_Map(ctx, (ID3D11Resource *)lfb_tex, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
     for (row = 0; row < FB_H; row++)
         memcpy((uint8_t *)m.pData + row * m.RowPitch, G.shadow[buf] + row * FB_W, FB_W * 2);
     ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource *)lfb_tex, 0);
     u[0] = G.cfg_menu_linear ? 1 : 0;
-    if (G.ws && GetTickCount() - G.ws_swap_tick >= 500) {
-        /* widescreen, outside matches: the bars beside the 4:3 front end are black */
-        static const float black[4] = { 0, 0, 0, 1 }, z[4] = { 0, 0, 0, 0 };
-        D3D11_RECT r;
-        r.left = 0; r.top = 0; r.right = G.c43_x; r.bottom = G.rt_h;
-        util_pass(ps_clear, rt_rtv[idx], NULL, 0, 0, G.rt_w, G.rt_h, ds_off, NULL, NULL, smp_point, black, z, NULL, &r);
-        r.left = G.c43_x + G.c43_w; r.right = G.rt_w;
-        util_pass(ps_clear, rt_rtv[idx], NULL, 0, 0, G.rt_w, G.rt_h, ds_off, NULL, NULL, smp_point, black, z, NULL, &r);
-    }
-    /* the game's 640x480 picture goes into the 4:3 area (all of a 4:3 target) */
-    util_pass(ps_lfb, rt_rtv[idx], NULL, G.c43_x, 0, G.c43_w, G.rt_h, ds_off, lfb_srv, NULL, smp_point, NULL, NULL, u, NULL);
+    /* the game's 640x480 picture, scaled to the render target */
+    util_pass(ps_lfb, rt_rtv[idx], NULL, 0, 0, G.rt_w, G.rt_h, ds_off, lfb_srv, NULL, smp_point, NULL, NULL, u, NULL);
     G.gpu_newer[buf] = 0;
 }
 
@@ -838,9 +764,9 @@ void d3d_lfb_sync_to_shadow(int buf)
     if (!ctx) return;
     d3d_flush();
     if (count++ < 10 || g_probe_all > 0) glog("LFB read of GPU-rendered %s buffer: reading back from the GPU (target %d)", buf ? "back" : "front", idx);
-    {   /* the 4:3 area of the target (all of it unless widescreen) */
+    {   /* the whole target, down to 640x480 */
         float p0[4];
-        p0[0] = p0[1] = 0; p0[2] = (float)G.c43_w / G.rt_w; p0[3] = (float)G.c43_x / G.rt_w;
+        p0[0] = p0[1] = 0; p0[2] = 1.0f; p0[3] = 0.0f;
         util_pass(ps_readback, rb_rtv, NULL, 0, 0, FB_W, FB_H, ds_off, NULL, rt_srv[idx], smp_point, NULL, p0, NULL, NULL);
     }
     ID3D11DeviceContext_CopyResource(ctx, (ID3D11Resource *)rb_staging, (ID3D11Resource *)rb_tex);
@@ -907,20 +833,29 @@ static void dump_backbuffer(void)
 /*
  * Display lock ([glide] DisplayLock=1, default; needs StepLock and the core's
  * precise clock). With the step lock, frames follow the game clock (60.0 Hz)
- * while the screen refreshes at its own rate (e.g. 59.94 Hz). In the test
- * second timing log that beat showed as a few seconds of uneven frames every
+ * while the screen refreshes at its own rate (e.g. 59.94 Hz). In the second
+ * test timing log that beat showed as a few seconds of uneven frames every
  * 16.7 s (1 / 0.06 Hz), each time a present crossed a refresh. Here the game
  * clock is steered instead: its base speed is the display rate / 60 (for
  * 60 Hz class screens, or 120 Hz with every other refresh), and a slow
  * correction keeps each present halfway between two refreshes. Changes stay
  * under 1% (59.94 Hz runs the game 0.1% slower). Uses DWM's composition
  * timing (vblank time and period); off when that is not available.
+ *
+ * Capture (0.3.0, NBA Live 99): when the lock starts (match start) the
+ * presents can sit anywhere in the refresh; the slow correction took 1 to 2 s
+ * to bring them from 0.95 to the middle (the 25 Nov pace logs), with the
+ * frames close to a refresh meanwhile. While the averaged phase is more than
+ * 0.2 from the middle (until it is within 0.08), the clock is steered 20 times
+ * harder (at most 1.5% off its base speed): the phase comes in within about
+ * 30 frames (half a second).
  */
 typedef HRESULT (WINAPI *DwmGetCompositionTimingInfo_fn)(HWND, DWM_TIMING_INFO *);
 static DwmGetCompositionTimingInfo_fn p_dwm_timing;
 static nba99core_set_clock_rate_fn p_set_rate;
 static int dl_state;                /* 0 not tried, 1 available, -1 not available */
-static double dl_integ, dl_rate_sent;
+static double dl_integ, dl_rate_sent, dl_e_avg;
+static int dl_capture = -1;         /* -1 not started, 1 pulling the phase in fast, 0 normal */
 static double dl_w_min = 1, dl_w_max, dl_w_sum, dl_w_start;
 static long dl_w_n;
 
@@ -930,6 +865,7 @@ static void display_lock(void)
     DWM_TIMING_INFO ti;
     LARGE_INTEGER now;
     double period, hz, base, ph, e, rate, k;
+    dl_last_ph = -1;
     if (!G.cfg_display_lock || !st || !st->precise_clock) {
         if (dl_rate_sent != 0 && dl_rate_sent != 1.0 && p_set_rate) p_set_rate(1.0);
         if (st && st->disp_lock) st->disp_lock = 0;
@@ -969,11 +905,26 @@ static void display_lock(void)
     ph = fmod((double)(now.QuadPart - (LONGLONG)ti.qpcVBlank), period);
     if (ph < 0) ph += period;
     ph /= period;                       /* 0 = at a refresh, 0.5 = halfway */
+    dl_last_ph = ph;
     e = ph - 0.5;                       /* > 0: presents come late in the interval: run the clock a little faster */
-    dl_integ += e * 0.00002;
-    if (dl_integ > 0.004) dl_integ = 0.004;
-    if (dl_integ < -0.004) dl_integ = -0.004;
-    rate = base * (1.0 + 0.004 * e + dl_integ);
+    if (dl_capture < 0) { dl_capture = 1; dl_e_avg = e; }
+    dl_e_avg += (e - dl_e_avg) * 0.2;
+    if (!dl_capture && fabs(dl_e_avg) > 0.2) dl_capture = 1;
+    if (dl_capture && fabs(dl_e_avg) < 0.08) {
+        dl_capture = 0;
+        glog("display lock: phase in the middle of the refresh (%.2f)", ph);
+    }
+    if (dl_capture) {
+        double f = 0.08 * e;           /* fast pull, at most 1.5% */
+        if (f > 0.015) f = 0.015;
+        if (f < -0.015) f = -0.015;
+        rate = base * (1.0 + f);
+    } else {
+        dl_integ += e * 0.00002;
+        if (dl_integ > 0.004) dl_integ = 0.004;
+        if (dl_integ < -0.004) dl_integ = -0.004;
+        rate = base * (1.0 + 0.004 * e + dl_integ);
+    }
     if (fabs(rate - dl_rate_sent) > 0.00001) { p_set_rate(rate); dl_rate_sent = rate; }
     if (!st->disp_lock) glog("display lock: on, display %.3f Hz, %d refresh(es) per frame, base clock x%.5f", hz, (int)k, base);
     st->disp_lock = 1;
@@ -1001,13 +952,10 @@ static void display_lock(void)
  *           (960 lines, centred: needs a picture at least 960 tall; smaller ones use crt-hyllian).
  *   Sharp - crt-hyllian with the Catmull-Rom horizontal filter and beam profile 1.
  *   Soft  - crt-hyllian with the Hermite horizontal filter and beam profile 2.
- * The mode comes from the core's shared stats (crt_mode, set by the options menu) when it is there,
- * else from the ini. Returns 1 when it drew the picture.
+ * The mode comes from the ini ([glide] CRT). Returns 1 when it drew the picture.
  */
 static int crt_mode(void)
 {
-    nba99_stats *st = core_stats();
-    if (st && st->crt_mode >= 0) return (int)st->crt_mode;
     return G.cfg_crt;
 }
 
@@ -1024,10 +972,8 @@ static int crt_present(int idx, const float *gp)
         G.pic_w = 0;   /* mouse mapping back to the full picture */
         return 0;
     }
-    {   /* the source: the game's 480 lines, 640 wide, or as wide as the picture in widescreen (0.7.9:
-           the whole wide render target, so a match keeps its full width under the filter) */
-        int w = G.ws ? ((int)((double)FB_H * G.rt_w / G.rt_h + 0.5) & ~1) : FB_W;
-        if (w < FB_W) w = FB_W;
+    {   /* the source: the game's 480 lines, 640 wide */
+        int w = FB_W;
         if (w != crt_w) {
             REL(crt_rtv); REL(crt_srv); REL(crt_tex);
             make_tex2d(w, FB_H, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE,
@@ -1064,51 +1010,12 @@ static int crt_present(int idx, const float *gp)
         util_pass(ps_crt_hyllian, bb_rtv, NULL, vx, vy, vw, vh, ds_off, NULL, crt_srv, smp_point, c, p0, u, NULL);
     }
     G.pic_x = vx; G.pic_y = vy; G.pic_w = vw; G.pic_h = vh;
-    if (G.ws) {   /* the mouse and the menu box belong to the 4:3 area in the middle */
-        G.pic_x = vx + (int)((double)vw * G.c43_x / G.rt_w + 0.5);
-        G.pic_w = (int)((double)vw * G.c43_w / G.rt_w + 0.5);
-    }
     if (mode != last || crt_w != last_w) glog("CRT filter: %s, mode %d, source %dx%d, picture %dx%d at %d,%d", what, mode, crt_w, FB_H, vw, vh, vx, vy);
     last = mode; last_w = crt_w;
     return 1;
 }
 
-/* gamepad menu selection (0.7.4): nba99core publishes the selected object in game pixels;
-   a dotted light grey frame is drawn round it on the shown picture. Hidden once nba99core has
-   not updated it for 250 ms (a match started, or the menus stopped polling). */
-static void nav_draw(void)
-{
-    nba99_stats *st = core_stats();
-    ID3D11BlendState *keep = util_bs;
-    int px = G.pic_w > 0 ? G.pic_x : G.view_x, py = G.pic_w > 0 ? G.pic_y : G.view_y;
-    int pw = G.pic_w > 0 ? G.pic_w : G.view_w, ph = G.pic_w > 0 ? G.pic_h : G.view_h;
-    float c[4] = { 0.80f, 0.80f, 0.80f, 1 }, p0[4];
-    uint32_t u[4];
-    long bx, by, bw, bh;
-    int x0, y0, x1, y1, t;
-    if (!st || !ps_navbox || pw <= 0 || ph <= 0) return;
-    bw = st->nav_box[2]; bh = st->nav_box[3];
-    if (bw <= 0 || bh <= 0 || (DWORD)(GetTickCount() - (DWORD)st->nav_time) > 250) return;
-    bx = st->nav_box[0]; by = st->nav_box[1];
-    x0 = px + (int)floorf(bx * pw / (float)FB_W + 0.5f);
-    y0 = py + (int)floorf(by * ph / (float)FB_H + 0.5f);
-    x1 = px + (int)floorf((bx + bw) * pw / (float)FB_W + 0.5f);
-    y1 = py + (int)floorf((by + bh) * ph / (float)FB_H + 0.5f);
-    if (x0 < px) x0 = px;
-    if (y0 < py) y0 = py;
-    if (x1 > px + pw) x1 = px + pw;
-    if (y1 > py + ph) y1 = py + ph;
-    if (x1 - x0 < 4 || y1 - y0 < 4) return;
-    t = ph / FB_H;                                     /* about one game pixel wide */
-    if (t < 2) t = 2;
-    p0[0] = (float)x0; p0[1] = (float)y0; p0[2] = (float)(x1 - x0); p0[3] = (float)(y1 - y0);
-    u[0] = (uint32_t)t; u[1] = (uint32_t)(3 * t); u[2] = u[3] = 0;
-    util_bs = NULL;
-    util_pass(ps_navbox, bb_rtv, NULL, x0, y0, x1 - x0, y1 - y0, ds_off, NULL, NULL, smp_point, c, p0, u, NULL);
-    util_bs = keep;
-}
-
-/* the picture for the back buffer: the game's frame (CRT filter or plain), then the menu box */
+/* the picture for the back buffer: the game's frame (CRT filter or plain) */
 static void compose_backbuffer(int idx, float *p)
 {
     static const float black[4] = { 0, 0, 0, 1 };
@@ -1116,95 +1023,7 @@ static void compose_backbuffer(int idx, float *p)
     if (!crt_present(idx, p)) {
         util_pass(ps_present, bb_rtv, NULL, G.view_x, G.view_y, G.view_w, G.view_h, ds_off, NULL, rt_srv[idx],
                   G.cfg_linear ? smp_linear : smp_point, NULL, p, NULL, NULL);
-        if (G.ws) {   /* the mouse and the menu box belong to the 4:3 area */
-            G.pic_x = G.view_x + (int)((double)G.view_w * G.c43_x / G.rt_w + 0.5);
-            G.pic_w = (int)((double)G.view_w * G.c43_w / G.rt_w + 0.5);
-            G.pic_y = G.view_y; G.pic_h = G.view_h;
-        }
     }
-    {   /* tell nba99core the shape matches are drawn at (it sets the match camera from it) */
-        nba99_stats *st = core_stats();
-        if (st) {
-            st->ws_aspect = G.ws ? (float)G.rt_w / (float)G.rt_h : 0.0f;
-            st->render_h = G.rt_h;   /* the 3D is drawn at this height, CRT filter or not (0.7.9) */
-        }
-    }
-    nav_draw();
-}
-
-/*
- * Presentation statistics (0.7.18). 0.7.16 (keep a frame waiting) and 0.7.17 (drain it)
- * both failed to fix the judder on the test PC, and both guessed at what the screen did.
- * This reads what Windows reports instead: after each Present, the swap chain's frame
- * statistics (IDXGISwapChainMedia, Windows 8.1 and later; else IDXGISwapChain) give the
- * last present that reached the screen, the refresh it went out on, and how the frame was
- * shown (composed by DWM, an overlay plane, or neither: our frame scanned out directly).
- * - glide2x.log (both builds): a line when that mode changes (the first 100 changes).
- * - judder.log (Debug), per second: how many frames reached the screen, how many stayed up
- *   for 2 or more refreshes (a repeat: judder), how many were never shown, and how many
- *   presents were still queued behind the screen.
- * Changes nothing in what is drawn or when. The 0.7.16 / 0.7.17 queue code is removed.
- */
-static const GUID k_iid_swapchain_media = { 0xdd95b90b, 0xf05f, 0x4f6a, { 0xbd, 0x65, 0x25, 0xbf, 0xb2, 0x64, 0xbd, 0x84 } };
-static IDXGISwapChainMedia *ps_media;
-static int ps_tried, ps_mode = -2, ps_mode_changes;
-static UINT ps_last_pc, ps_last_rc;
-static int ps_have;
-
-static const char *ps_mode_name(int m)
-{
-    switch (m) {
-    case DXGI_FRAME_PRESENTATION_MODE_COMPOSED: return "composed by DWM";
-    case DXGI_FRAME_PRESENTATION_MODE_OVERLAY: return "overlay plane";
-    case DXGI_FRAME_PRESENTATION_MODE_NONE: return "direct (not composed)";
-    case DXGI_FRAME_PRESENTATION_MODE_COMPOSITION_FAILURE: return "composition failure";
-    case -1: return "no statistics";
-    default: return "unknown";
-    }
-}
-
-static void present_stats_release(void) { REL(ps_media); ps_tried = 0; ps_have = 0; }
-
-static void present_stats(void)
-{
-    DXGI_FRAME_STATISTICS_MEDIA m;
-    UINT last = 0;
-    int mode = -1;
-    HRESULT hr;
-    if (!sc) return;
-    if (!ps_tried) {
-        ps_tried = 1;
-        if (FAILED(IDXGISwapChain_QueryInterface(sc, k_iid_swapchain_media, (void **)&ps_media))) ps_media = NULL;
-        glog("present statistics: %s", ps_media ? "IDXGISwapChainMedia" : "IDXGISwapChain only (no presentation mode)");
-    }
-    memset(&m, 0, sizeof m);
-    if (ps_media) {
-        hr = IDXGISwapChainMedia_GetFrameStatisticsMedia(ps_media, &m);
-        if (SUCCEEDED(hr)) mode = (int)m.CompositionMode;
-    } else {
-        DXGI_FRAME_STATISTICS f;
-        memset(&f, 0, sizeof f);
-        hr = IDXGISwapChain_GetFrameStatistics(sc, &f);
-        if (SUCCEEDED(hr)) { m.PresentCount = f.PresentCount; m.PresentRefreshCount = f.PresentRefreshCount; mode = -3; }
-    }
-    if (FAILED(hr)) { ps_have = 0; mode = -1; }
-    if (mode != ps_mode) {
-        if (ps_mode_changes++ < 100)
-            glog("display: frames shown %s (was %s)", mode == -3 ? "(mode not reported)" : ps_mode_name(mode),
-                 ps_mode == -2 ? "start" : ps_mode == -3 ? "(mode not reported)" : ps_mode_name(ps_mode));
-        ps_mode = mode;
-    }
-    if (FAILED(hr)) return;
-    IDXGISwapChain_GetLastPresentCount(sc, &last);
-    if (ps_have && m.PresentCount != ps_last_pc) {
-        UINT dp = m.PresentCount - ps_last_pc, dr = m.PresentRefreshCount - ps_last_rc;
-        jd_screen(dp, dr, last - m.PresentCount, mode);
-    } else if (ps_have) {
-        jd_screen(0, 0, last - m.PresentCount, mode);
-    }
-    ps_last_pc = m.PresentCount;
-    ps_last_rc = m.PresentRefreshCount;
-    ps_have = 1;
 }
 
 /*
@@ -1258,8 +1077,8 @@ static void present_rt(int idx, int sync)
         qs_after = 0;
         if (qs_skips <= 20 || qs_skips % 50 == 0)
             glog("display queue: Present blocked for 30 frames (a frame waiting), one frame not shown to clear it (%ld so far)", qs_skips);
-        jd_note_skip();
         G.last_present_ms = gnow_ms();
+        pc.t_p0 = pc.t_p1 = G.last_present_ms;
         return;
     }
     p[1] = 1.0f / gamma;
@@ -1276,11 +1095,12 @@ static void present_rt(int idx, int sync)
     t0 = gnow_ms();
     hr = IDXGISwapChain_Present(sc, sync, 0);
     took = gnow_ms() - t0;
+    pc.t_p0 = t0;
+    pc.t_p1 = t0 + took;
     if (FAILED(hr)) {
         static int n;
         if (n++ < 5) glog("Present failed (0x%08lx)", (unsigned long)hr);
     }
-    present_stats();
     queue_watch(took);
     G.last_present_ms = gnow_ms();
     /* the swap chain unbinds the back buffer on flip: Glide state must be re-applied */
@@ -1357,10 +1177,12 @@ static int step_lock(void)
     if (cur - (sl_target + per) >= 0) {
         sl_target = cur;   /* drawing took longer than a step: show it now, no wait */
         G.last_swap_ms = gnow_ms();
+        pc_lock_done('l');
         return 1;
     }
     sl_target += per;
     {
+        int how = sl_count(st, frames) - sl_target >= 0 ? 'r' : 'w';
         /* at most 50 ms in all (0.7.7). The event is set on every tick, so a per-wait
            timeout never fires while the clock runs; when the game stops making input
            frames with the clock still running (auto replays, 2026-10-31) the loop
@@ -1371,9 +1193,11 @@ static int step_lock(void)
             if (waited >= 50.0 ||
                 WaitForSingleObject((HANDLE)st->tick_event, (DWORD)(50.0 - waited) + 1) == WAIT_TIMEOUT) {
                 sl_target = sl_count(st, frames);
+                how = 't';
                 break;
             }
         }
+        pc_lock_done(how);
     }
     G.last_swap_ms = gnow_ms();
     return 1;
@@ -1382,31 +1206,15 @@ static int step_lock(void)
 void d3d_swap(int interval)
 {
     if (!ctx) return;
-    jd_swap_in();
-    if (NBA99_DEBUG && G.ws) {   /* probe: the first swaps of a match */
-        static int n = 100;
-        nba99_stats *st = core_stats();
-        if (g_probe_all < 0) { char v[4]; g_probe_all = GetEnvironmentVariableA("NBA99_LFB_PROBE", v, sizeof v) > 0; }
-        if (GetTickCount() - G.ws_swap_tick >= 500) n = 0;
-        if (n < 12 || (g_probe_all && n < 400))
-            glog("ws probe: swap %d after a gap: draws 4:3 %ld, full width %ld, camera %s, match 3D flag %ld, screen state %d, render buffer %d", n,
-                 g_wsp_draws[0], g_wsp_draws[1], st && st->ws_fov != 0 ? "wide" : "4:3", st ? st->match_3d : -1L,
-                 st && st->game_v11 ? (int)*(volatile unsigned char *)(uintptr_t)0x5C8284 : -1, (int)G.render_buffer);
-        n++;
-    }
-    g_wsp_draws[0] = g_wsp_draws[1] = 0;
+    pc_open();
+    pc.t_in = gnow_ms();
     d3d_flush();
-    jd_flushed();
+    pc.t_fl = gnow_ms();
     G.step_lock_on = step_lock();
+    pc.t_lk = gnow_ms();
     if (!G.step_lock_on) pace(interval);
-    jd_locked();
     present_rt(1 - front_idx, G.cfg_vsync ? (interval > 0 ? 1 : 0) : 0);
-    jd_swap_out();
-    G.ws_swap_tick = GetTickCount();
-    {   /* the next frame starts with 3D (nba99core marks the HUD again) */
-        nba99_stats *st = core_stats();
-        if (st) { st->draw_2d = 0; st->match_3d = 0; }
-    }
+    G.swap_tick = GetTickCount();
     /* the back buffer becomes the front buffer */
     front_idx = 1 - front_idx;
     {
@@ -1416,6 +1224,7 @@ void d3d_swap(int interval)
     G.front_dirty = 0;
     G.frame++;
     G.dirty = 1;
+    pc_frame();
 }
 
 /* Front buffer flush thread. When the game draws into the Glide front buffer

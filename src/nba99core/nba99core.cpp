@@ -41,15 +41,18 @@
  *     never calls it. Every module the exe loads with LoadLibraryA gets its
  *     DirectDrawCreate import patched: no display mode change, normal
  *     cooperative level, so our glide2x.dll keeps the desktop mode.
- *  6. Threads: every thread the exe creates and every timer callback it sets is
- *     logged. CPU pinning and safe thread termination (98 fixes) are in but off
- *     by default until the same problems show in 99 (PinGameThreads,
- *     SafeTerminate).
+ *  6. Threads: every thread the exe creates, every timer callback it sets and
+ *     every TerminateThread call is logged; the process gets all CPUs back if
+ *     it was started on fewer. (98's CPU pinning and safe thread termination
+ *     were removed in 0.3.0: 99 never showed the problems they fixed.)
  *  7. Front-end mouse (mouse.inc): the menus are 640x480 Win32 child windows;
  *     screen points are moved between the scaled picture and those windows.
  *  8. THRASH driver log (Debug tool): [nba99] ThrashLog=1 makes the game load
  *     3rash\voodoologa.dll (thrash_log) instead of 3rash\voodooa.dll; it logs
  *     every THRASH call and forwards to the real driver.
+ *     [nba99] EacsndLog=1 does the same for the sound DLL: the exe's
+ *     LoadLibraryA("eacsnd.dll") loads eacsnd_log.dll, which logs every call
+ *     to EA's eacsnd.dll and its callbacks into the game.
  *  9. Front-end labels (wintext.inc): WM_SETTEXT to the game's text controls
  *     goes straight to their window procedure with the game's own string
  *     pointer, as on Windows 98 (NT passes a temporary copy, which the
@@ -330,24 +333,47 @@ static int is_install_dat(const char *path)
 static void (*g_prof_open)(const char *name, double ms);   /* Debug stall profiler (profile.inc) */
 static int g_log_opens;
 
+/* 0.3.0 file speed (from NBA Live 98): drive info cache, temp file buffer, speech in memory */
+#include "fscache.inc"
+#include "tempbuf.inc"
+#include "spchmem.inc"
+
 static HANDLE WINAPI h_CreateFileA(LPCSTR name, DWORD access, DWORD share, LPSECURITY_ATTRIBUTES sa,
                                    DWORD disp, DWORD flags, HANDLE tmpl)
 {
     HANDLE h;
+    DWORD err;
     if (g_install_ready && is_install_dat(name)) {
         LOG("install.dat: game opened %s (access 0x%lx); redirected to %s", name, access, g_install_dat);
         return o_CreateFileA(g_install_dat, access, share, sa, disp, flags, tmpl);
     }
-    if (g_log_opens && name) LOG("open %s (access 0x%lx, disposition %lu)", name, access, disp);
+    if (g_log_opens && name) LOG("open %s (access 0x%lx, disposition %lu, flags 0x%lx)", name, access, disp, flags);
+    if ((h = spm_try_open(name, access, disp, flags)) != NULL) {
+        if (g_log_opens) LOG("open %s: in memory", name);
+        if (g_prof_open && name) g_prof_open(name, 0.0);
+        return h;
+    }
+    if (spm_known_missing(name, access, disp)) {
+        if (g_log_opens) LOG("open %s: known missing", name);
+        if (g_prof_open && name) g_prof_open(name, 0.0);
+        return INVALID_HANDLE_VALUE;
+    }
+    if (g_tmb_on) tmb_before_open(name);
     if (g_prof_open && name) {
         LARGE_INTEGER a, b;
         QueryPerformanceCounter(&a);
         h = o_CreateFileA(name, access, share, sa, disp, flags, tmpl);
+        err = GetLastError();
         QueryPerformanceCounter(&b);
         g_prof_open(name, (double)(b.QuadPart - a.QuadPart) * 1000.0 / (double)g_qpf.QuadPart);
-        return h;
+    } else {
+        h = o_CreateFileA(name, access, share, sa, disp, flags, tmpl);
+        err = GetLastError();
     }
-    return o_CreateFileA(name, access, share, sa, disp, flags, tmpl);
+    spm_after_open(name, access, disp, h, err);
+    if (g_tmb_on) tmb_opened(h, name, access, disp, flags);
+    SetLastError(err);
+    return h;
 }
 
 static DWORD WINAPI h_GetFileAttributesA(LPCSTR name)
@@ -590,141 +616,25 @@ static void WINAPI h_GlobalMemoryStatus(LPMEMORYSTATUS ms)
 }
 
 /* ------------------------------------------------------------------------- */
-/* threads: logging, optional CPU pinning and safe termination (98 fixes)    */
+/* threads: logging                                                          */
 /* ------------------------------------------------------------------------- */
-static DWORD_PTR g_game_mask;
-static int g_pin;
-
+/* NBA Live 98 needed two thread fixes: CPU pinning (PinGameThreads, GameCPU) and
+   safe thread termination (SafeTerminate). Both were carried into 99 switched off
+   and removed in 0.3.0 (25 Nov 2026): in every 99 log (both test PCs, up to
+   7.7 hours) the game never called TerminateThread, never set an affinity itself
+   and ran on all CPUs without a freeze. TerminateThread calls are still logged. */
 typedef BOOL (WINAPI *TerminateThread_fn)(HANDLE, DWORD);
-typedef void (WINAPI *CS_fn)(LPCRITICAL_SECTION);
-typedef DWORD (WINAPI *WaitSingle_fn)(HANDLE, DWORD);
-typedef DWORD (WINAPI *WaitMultiEx_fn)(DWORD, const HANDLE *, BOOL, DWORD, BOOL);
-typedef DWORD (WINAPI *SleepEx_fn)(DWORD, BOOL);
 static TerminateThread_fn o_TerminateThread;
-static CS_fn o_EnterCS, o_LeaveCS;
-static WaitSingle_fn o_WaitSingle;
-static WaitMultiEx_fn o_WaitMultiEx;
-static SleepEx_fn o_SleepEx;
-static int g_safe_terminate;
-
-#define TS_MAX 128
-static struct { volatile DWORD tid; volatile LONG held, waiting; } g_ts[TS_MAX];
-
-static int ts_slot(DWORD tid, int create)
-{
-    int i;
-    for (i = 0; i < TS_MAX; i++) if (g_ts[i].tid == tid) return i;
-    if (!create) return -1;
-    for (i = 0; i < TS_MAX; i++)
-        if (InterlockedCompareExchange((volatile LONG *)&g_ts[i].tid, (LONG)tid, 0) == 0) {
-            g_ts[i].held = 0; g_ts[i].waiting = 0;
-            return i;
-        }
-    return -1;
-}
-static void WINAPI h_EnterCS(LPCRITICAL_SECTION cs)
-{
-    int i;
-    o_EnterCS(cs);
-    i = ts_slot(GetCurrentThreadId(), 1);
-    if (i >= 0) g_ts[i].held++;
-}
-static void WINAPI h_LeaveCS(LPCRITICAL_SECTION cs)
-{
-    int i = ts_slot(GetCurrentThreadId(), 1);
-    if (i >= 0) g_ts[i].held--;
-    o_LeaveCS(cs);
-}
-static DWORD WINAPI h_WaitSingle(HANDLE h, DWORD ms)
-{
-    DWORD r;
-    int i = ts_slot(GetCurrentThreadId(), 1);
-    if (i >= 0) g_ts[i].waiting++;
-    r = o_WaitSingle(h, ms);
-    if (i >= 0) g_ts[i].waiting--;
-    return r;
-}
-static DWORD WINAPI h_WaitMultiEx(DWORD n, const HANDLE *hs, BOOL all, DWORD ms, BOOL alertable)
-{
-    DWORD r;
-    int i = ts_slot(GetCurrentThreadId(), 1);
-    if (i >= 0) g_ts[i].waiting++;
-    r = o_WaitMultiEx(n, hs, all, ms, alertable);
-    if (i >= 0) g_ts[i].waiting--;
-    return r;
-}
-static DWORD WINAPI h_SleepEx(DWORD ms, BOOL alertable)
-{
-    DWORD r;
-    int i = ts_slot(GetCurrentThreadId(), 1);
-    if (i >= 0) g_ts[i].waiting++;
-    r = o_SleepEx(ms, alertable);
-    if (i >= 0) g_ts[i].waiting--;
-    return r;
-}
-
-static int in_exe(uint32_t a)
-{
-    HMODULE exe = GetModuleHandleA(NULL);
-    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)((BYTE *)exe + ((IMAGE_DOS_HEADER *)exe)->e_lfanew);
-    return a >= (uint32_t)(uintptr_t)exe && a < (uint32_t)(uintptr_t)exe + nt->OptionalHeader.SizeOfImage;
-}
 
 static BOOL WINAPI h_TerminateThread(HANDLE h, DWORD code)
 {
-    DWORD tid = GetThreadId(h);
-    double t0 = now_ms();
-    int tries, slot;
     char at[96];
     CALLER(at);
-    if (!g_safe_terminate || !tid || tid == GetCurrentThreadId()) {
-        LOG("TerminateThread(tid %lu) from %s", tid, at);
-        return o_TerminateThread(h, code);
-    }
-    slot = ts_slot(tid, 0);
-    for (tries = 0; tries < 2000; tries++) {
-        CONTEXT c;
-        LONG held, waiting;
-        if (WaitForSingleObject(h, 0) == WAIT_OBJECT_0) {
-            LOG("TerminateThread(tid %lu): the thread had already ended", tid);
-            return TRUE;
-        }
-        if (SuspendThread(h) == (DWORD)-1) {
-            if (WaitForSingleObject(h, 100) == WAIT_OBJECT_0) {
-                LOG("TerminateThread(tid %lu): the thread ended by itself", tid);
-                return TRUE;
-            }
-            break;
-        }
-        held = slot >= 0 ? g_ts[slot].held : 0;
-        waiting = slot >= 0 ? g_ts[slot].waiting : 0;
-        memset(&c, 0, sizeof c);
-        c.ContextFlags = CONTEXT_CONTROL;
-        if (held <= 0 && (DWORD)(uintptr_t)g_cs.OwningThread != tid && GetThreadContext(h, &c)) {
-            if (waiting > 0) {
-                BOOL r = o_TerminateThread(h, code);
-                ResumeThread(h);
-                LOG("TerminateThread(tid %lu): terminated while waiting, after %.1f ms", tid, now_ms() - t0);
-                return r;
-            }
-            if (in_exe(c.Eip)) {
-                uint32_t *sp = (uint32_t *)(uintptr_t)(c.Esp - 8);
-                sp[0] = 0;          /* return address (ExitThread never returns) */
-                sp[1] = code;
-                c.Esp = (DWORD)(uintptr_t)sp;
-                c.Eip = (DWORD)(uintptr_t)GetProcAddress(GetModuleHandleA("kernel32.dll"), "ExitThread");
-                if (SetThreadContext(h, &c)) {
-                    ResumeThread(h);
-                    WaitForSingleObject(h, 1000);
-                    LOG("TerminateThread(tid %lu): sent to ExitThread from game code after %.1f ms", tid, now_ms() - t0);
-                    return TRUE;
-                }
-            }
-        }
-        ResumeThread(h);
-        Sleep(1);
-    }
-    LOG("TerminateThread(tid %lu): no safe point found in %.0f ms, terminating anyway", tid, now_ms() - t0);
+    /* GetThreadId is Vista and later: looked up, not imported (Windows 98 rule) */
+    static DWORD (WINAPI *get_tid)(HANDLE);
+    static int looked;
+    if (!looked++) get_tid = (DWORD (WINAPI *)(HANDLE))GetProcAddress(GetModuleHandleA("kernel32.dll"), "GetThreadId");
+    LOG("TerminateThread(tid %lu) from %s", get_tid ? get_tid(h) : 0, at);
     return o_TerminateThread(h, code);
 }
 
@@ -744,10 +654,9 @@ static HANDLE WINAPI h_CreateThread(LPSECURITY_ATTRIBUTES sa, SIZE_T ss, LPTHREA
     h = o_CreateThread(sa, ss, fn, arg, flags, &tid);
     if (tid_out) *tid_out = tid;
     if (tid) note_thread(tid);
-    if (h && g_pin) SetThreadAffinityMask(h, g_game_mask);
     addr_name((uint32_t)(uintptr_t)fn, entry, sizeof entry);
-    LOG("game thread created: tid %lu, entry %s (arg 0x%08lx), from %s%s", tid, entry,
-        (unsigned long)(uintptr_t)arg, at, g_pin ? ", pinned" : "");
+    LOG("game thread created: tid %lu, entry %s (arg 0x%08lx), from %s", tid, entry,
+        (unsigned long)(uintptr_t)arg, at);
     return h;
 }
 
@@ -755,7 +664,7 @@ static HANDLE WINAPI h_CreateThread(LPSECURITY_ATTRIBUTES sa, SIZE_T ss, LPTHREA
 #include "timing.inc"
 
 /* timeSetEvent: the game's timer callbacks run through timer_thunk (counted for
- * the timing log; the timer thread is pinned with the game's when PinGameThreads=1) */
+ * the timing log) */
 typedef MMRESULT (WINAPI *timeSetEvent_fn)(UINT, UINT, LPTIMECALLBACK, DWORD_PTR, UINT);
 static timeSetEvent_fn o_timeSetEvent;
 #define MAX_TIMERS 16
@@ -772,11 +681,10 @@ static void CALLBACK timer_thunk(UINT id, UINT msg, DWORD_PTR user, DWORD_PTR d1
     int known = 0;
     for (i = 0; i < n && i < 8; i++) if (g_timer_tid[i] == me) { known = 1; break; }
     if (!known) {
-        if (g_pin) SetThreadAffinityMask(GetCurrentThread(), g_game_mask);
         i = InterlockedIncrement(&g_ntimer_tid) - 1;
         if (i < 8) g_timer_tid[i] = me;
         note_thread(me);
-        LOG("timer thread %lu runs game timer callback %s 0x%08lx", me, g_pin ? "(pinned)" : "",
+        LOG("timer thread %lu runs game timer callback 0x%08lx", me,
             (unsigned long)(uintptr_t)g_timers[slot].cb);
     }
     timing_on_timer(g_timers[slot].cb);
@@ -950,11 +858,26 @@ static void hook_module(HMODULE m, const char *name)
     }
 }
 
+/* EacsndLog=1 (Debug build only): the exe's LoadLibraryA("eacsnd.dll") loads our logging
+   proxy eacsnd_log.dll from the game folder instead; it loads EA's eacsnd.dll by full path and
+   passes every call on. Only the exact name "eacsnd.dll" is redirected, so the proxy's own
+   load of the real DLL (a full path) is not. Main never loads it: Main writes no logs. */
+static int eacsndlog_on(void) { return NBA99_DEBUG && ini_int("EacsndLog", 0); }
+
 static HMODULE WINAPI h_LoadLibraryA(LPCSTR name)
 {
     HMODULE before, m;
-    char at[96], path[MAX_PATH] = "";
+    char at[96], path[MAX_PATH] = "", proxy[MAX_PATH];
     CALLER(at);
+    if (name && !_stricmp(name, "eacsnd.dll") && eacsndlog_on()) {
+        _snprintf(proxy, sizeof proxy, "%seacsnd_log.dll", g_exe_dir);
+        if (GetFileAttributesA(proxy) == INVALID_FILE_ATTRIBUTES) {
+            LOG("sound DLL: EacsndLog=1 but eacsnd_log.dll is missing (it is in the Debug release); using eacsnd.dll");
+        } else {
+            LOG("sound DLL: LoadLibrary(\"%s\") from %s redirected to %s (eacsnd_log, EacsndLog=1)", name, at, proxy);
+            name = proxy;
+        }
+    }
     before = name ? GetModuleHandleA(name) : NULL;
     m = o_LoadLibraryA(name);
     if (m) GetModuleFileNameA(m, path, sizeof path);
@@ -967,24 +890,12 @@ static HMODULE WINAPI h_LoadLibraryA(LPCSTR name)
 
 static void setup_affinity(void)
 {
+    /* a compatibility setting can start the game on one CPU (seen on the handheld test PC): give it all of them */
     DWORD_PTR pm = 0, sm = 0;
-    int cpu;
     GetProcessAffinityMask(GetCurrentProcess(), &pm, &sm);
-    g_pin = ini_int("PinGameThreads", 0);
-    cpu = ini_int("GameCPU", -1);
-    if (cpu >= 0 && cpu < (int)(8 * sizeof(DWORD_PTR)) && (sm & ((DWORD_PTR)1 << cpu)))
-        g_game_mask = (DWORD_PTR)1 << cpu;
-    else
-        g_game_mask = pm & (~pm + 1);              /* lowest allowed CPU */
     if (sm && pm != sm) {
         SetProcessAffinityMask(GetCurrentProcess(), sm);
         LOG("process affinity was 0x%lx (system 0x%lx): restored to all CPUs", (unsigned long)pm, (unsigned long)sm);
-    }
-    if (g_pin) {
-        SetThreadAffinityMask(GetCurrentThread(), g_game_mask);
-        LOG("game threads pinned to CPU mask 0x%lx (PinGameThreads=1)", (unsigned long)g_game_mask);
-    } else {
-        LOG("game thread pinning off (PinGameThreads=0, default in 0.1)");
     }
 }
 
@@ -1083,7 +994,6 @@ static void init(HINSTANCE self)
     (void)self;
 
     g_is_v11 = identify_exe();
-    g_stats.game_v11 = 0;   /* never: glide2x would read NBA Live 98 addresses (judder log, pause screens) */
     LOG("exe: %s", g_is_v11 ? "NBAWIN.EXE v1.1 (verified)" : "not the verified v1.1 build: only the generic fixes are applied");
     g_log_opens = NBA99_DEBUG ? ini_int("LogFileOpens", 0) : 0;
 
@@ -1105,6 +1015,9 @@ static void init(HINSTANCE self)
     if (!o_GlobalMemoryStatus) o_GlobalMemoryStatus = GlobalMemoryStatus;
     if (!o_CreateThread) o_CreateThread = CreateThread;
     if (!o_LoadLibraryA) o_LoadLibraryA = LoadLibraryA;
+    fscache_setup(exe);
+    tempbuf_setup(exe);
+    spchmem_setup(exe);
     registry_setup(exe);
     mouse_setup(exe);
     wintext_setup(exe);
@@ -1120,23 +1033,8 @@ static void init(HINSTANCE self)
         LOG("DirectDraw: keep desktop mode off (KeepDesktopMode=0)");
     }
 
-    g_safe_terminate = ini_int("SafeTerminate", 0);
     o_TerminateThread = (TerminateThread_fn)iat_hook(exe, "KERNEL32.dll", "TerminateThread", (void *)h_TerminateThread);
     if (!o_TerminateThread) o_TerminateThread = TerminateThread;
-    if (g_safe_terminate) {
-        o_EnterCS = (CS_fn)iat_hook(exe, "KERNEL32.dll", "EnterCriticalSection", (void *)h_EnterCS);
-        o_LeaveCS = (CS_fn)iat_hook(exe, "KERNEL32.dll", "LeaveCriticalSection", (void *)h_LeaveCS);
-        o_WaitSingle = (WaitSingle_fn)iat_hook(exe, "KERNEL32.dll", "WaitForSingleObject", (void *)h_WaitSingle);
-        o_WaitMultiEx = (WaitMultiEx_fn)iat_hook(exe, "KERNEL32.dll", "WaitForMultipleObjectsEx", (void *)h_WaitMultiEx);
-        o_SleepEx = (SleepEx_fn)iat_hook(exe, "KERNEL32.dll", "SleepEx", (void *)h_SleepEx);
-        LOG("safe thread termination: hooks %s", (o_EnterCS && o_LeaveCS && o_WaitSingle && o_WaitMultiEx && o_SleepEx) ? "ok" : "INCOMPLETE");
-        if (!o_EnterCS || !o_LeaveCS) g_safe_terminate = 0;
-        if (!o_WaitSingle) o_WaitSingle = WaitForSingleObject;
-        if (!o_WaitMultiEx) o_WaitMultiEx = WaitForMultipleObjectsEx;
-        if (!o_SleepEx) o_SleepEx = SleepEx;
-    } else {
-        LOG("safe thread termination: off (SafeTerminate=0, default in 0.1); TerminateThread calls are logged");
-    }
 
     if (g_is_v11) {
         patch_cd_check();
@@ -1169,6 +1067,10 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
                            (LPCSTR)(void *)DllMain, &pinned);
         init(inst);
+    } else if (reason == DLL_PROCESS_DETACH) {
+        fscache_report();
+        tempbuf_report();
+        spchmem_report();
     }
     return TRUE;
 }

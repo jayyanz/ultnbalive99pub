@@ -188,16 +188,6 @@ static const char k_hlsl_util[] =
 "  return (q.r << 11) | (q.g << 5) | q.b;\n"
 "}\n"
 "float4 ps_overlay(VO i) : SV_Target { return S.SampleLevel(SS, i.uv, 0); }\n"
-/* gamepad menu selection (0.7.4): a dotted frame; viewport = the frame's rectangle,
-   p0.xy its top left in pixels, p0.zw its size, u0.x line width, u0.y dash length */
-"float4 ps_navbox(VO i) : SV_Target {\n"
-"  float2 p = i.pos.xy - p0.xy; float t = (float)u0.x;\n"
-"  bool ex = p.x < t || p.x >= p0.z - t, ey = p.y < t || p.y >= p0.w - t;\n"
-"  if (!ex && !ey) discard;\n"
-"  float s = ey ? p.x : p.y;\n"
-"  if (fmod(floor(s / (float)u0.y), 2.0) != 0.0) discard;\n"
-"  return float4(color.rgb, 1);\n"
-"}\n"
 "float4 ps_present(VO i) : SV_Target {\n"
 "  float3 c = S.SampleLevel(SS, i.uv, 0).rgb;\n"
 "  c = pow(saturate(c), p0.y);\n"

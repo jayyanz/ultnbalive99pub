@@ -5,7 +5,8 @@ with a 16-bit setup program that no longer runs on 64-bit Windows. This project 
 current PCs without changing any of its files: a launcher and a set of DLLs sit next to the game and fix it
 in memory as it runs.
 
-Release 0.1 (stage 1): the game runs as shipped on Windows 11.
+Release 0.3: the game runs as shipped on Windows 10 and 11, with our own sound driver, fast loading from
+network drives and smooth 60 fps matches.
 
 - **No installer, no disc, no registry:** a plain copy of the disc's game folder runs. The CD check is
   skipped in memory, the install paths the game expects are supplied by our core, and the game's registry
@@ -16,12 +17,20 @@ Release 0.1 (stage 1): the game runs as shipped on Windows 11.
   changed.
 - **Menus on Windows 10 and 11:** the menu labels show their proper words (Windows 10 and 11 garbled them),
   and Alt-Tab out of the game and back no longer freezes it.
+- **Sound (0.2):** our `eacsnd.dll` replaces EA's DirectSound driver and plays the game's sound through SDL3
+  on any output device (stereo, 5.1 or 7.1 outputs), with no DirectSound needed.
+- **Fast loading from network drives (0.3):** drive information is cached, the game's temporary roster files
+  stay in memory and the commentary banks are read into memory once, so a network drive plays as smoothly as
+  a local one.
+- **Smooth frame pacing (0.3):** every frame of a match shows exactly one step of the game, and the game clock
+  is matched to the screen, so animation and camera movement are even. Works on 60 Hz and 120 Hz screens, and
+  with G-Sync or FreeSync at other rates.
 - **Keys:** Page Down saves a screenshot to `screenshots\` in the game folder; Ctrl+F11 shows or hides the
   frame rate.
 - **Settings:** `nba99fix.ini` (the game keeps its own settings in `nba99.ini`).
 
-Later releases are planned to add faster loading from network drives, sound on SDL3, gamepads, smooth frame
-pacing, an in-game options menu and the rosters.
+Later releases are planned to add gamepads with rumble, the rosters (including the shipped 1998-99 set),
+an in-game options menu, visual options and multiplayer.
 
 **Unofficial.** Not affiliated with or endorsed by Electronic Arts. You need your own copy of the
 game. No EA code, data or art is included in this project or its downloads.
@@ -51,24 +60,28 @@ It is not needed: the disc's `\NBA99\` folder is the complete game, so the insta
 3. **Apply EA's v1.1 patch:** run `nbalive99patch_english.exe` (a 32-bit self-extracting zip, fine on
    Windows 11) and unzip it into the game folder, replacing the files there, or open it with 7-Zip and
    extract it into the game folder. Check that `NBAWIN.EXE` is now 2,488,320 bytes.
-4. **Copy our release files** into the game folder: download a release zip (Main for playing, Debug for
+4. **Keep EA's sound driver:** rename the game's `EACSND.DLL` to `eacsnd_ea.dll`. Our `eacsnd.dll` takes its
+   place; EA's copy is only used by the Debug build's sound log, and renaming it back restores EA's sound.
+5. **Copy our release files** into the game folder: download a release zip (Main for playing, Debug for
    testing and bug reports) and copy all of its files and folders next to `NBAWIN.EXE`.
-5. Start the game with **`NBALive99.exe`**.
+6. Start the game with **`NBALive99.exe`**.
 
-The game's own files are never changed. The install paths the game reads (its `install.dat`) are written as
-a copy in `%TEMP%\NBALive99\`. To uninstall our files, delete the ones you copied in step 4 (and
-`nba99fix.ini`, `logs\` and `crash\` if they are there).
+Apart from the sound driver in step 4, the game's own files are never changed. The install paths the game
+reads (its `install.dat`) are written as a copy in `%TEMP%\NBALive99\`. To uninstall our files, delete the
+ones you copied in step 5 (and `nba99fix.ini`, `logs\` and `crash\` if they are there), then rename
+`eacsnd_ea.dll` back to `EACSND.DLL`.
 
 The shipped 1998-99 rosters stay on the disc (`\NBA99\ORIGDB` and `\NBA99\DBDATA`); the patch replaces some
 of the roster tables in `ORIGDB`. A later release explains how to use the shipped rosters as well.
 
-## Known limitations in 0.1
+## Known limitations in 0.3
 
-- Loading is slow when the game folder is on a network drive (around 25 seconds for the database at start
-  and again when a match loads). A local drive is much faster. A later release fixes this.
-- Sound is EA's own DirectSound driver as shipped.
-- The arena behind the menus is drawn at full resolution; the menus themselves are the game's own 640x480
-  pictures, scaled.
+- Screens whose refresh rate is not a multiple of 60 Hz (75, 100, 144 Hz) without G-Sync or FreeSync show
+  matches unevenly; set the desktop to 60 or 120 Hz, or turn on variable refresh.
+- Auto replays run at 15 frames a second, as the game was made.
+- EA's licence screen at start waits about 8 seconds unless a key is pressed.
+- The menus themselves are the game's own 640x480 pictures, scaled.
+- The game mixes all its sound to stereo; positioned (3D) sound around surround speakers is not active yet.
 
 ## Settings
 
@@ -99,6 +112,7 @@ user's machine from their own files. See [CONTRIBUTING.md](CONTRIBUTING.md) for 
 | Component | Licence | Licence file |
 |---|---|---|
 | DOSBox Staging CRT shaders crt-hyllian and vga-1080p, ported to HLSL (in `glide2x.dll`) | MIT | `src/third_party/CRT-SHADERS-LICENSE.txt` |
+| SDL 3.2.26 (`SDL3.dll`, used by `eacsnd.dll`) | zlib | `src/third_party/SDL3-LICENSE.txt` |
 
 ## Licence
 

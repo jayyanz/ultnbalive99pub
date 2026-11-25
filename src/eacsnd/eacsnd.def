@@ -1,0 +1,18 @@
+LIBRARY eacsnd.dll
+EXPORTS
+    _iSNDdllversion@0=S_dllversion@0 @1
+    _iSNDdirectsetfunctions@32=S_setfunctions@32 @2
+    _iSNDdirectcaps@4=S_caps@4 @3
+    _iSNDdirectstart@8=S_start@8 @4
+    _iSNDdirectstop@0=S_stop@0 @5
+    _iSNDdirectrecordstart@16=S_recordstart@16 @6
+    _iSNDdirectrecordpacket@4=S_recordpacket@4 @7
+    _iSNDdirectrecordstop@0=S_recordstop@0 @8
+    _iSNDdirectserve@0=S_serve@0 @9
+    _iSNDdirectvol@8=S_vol@8 @10
+    _iSNDdirectpos3d@12=S_pos3d@12 @11
+    _iSNDdirectrate@8=S_rate@8 @12
+    _iSNDdirectcreate3dbuf@28=S_create3dbuf@28 @13
+    _iSNDdirectremovebuf@4=S_removebuf@4 @14
+    _iSNDdirectplay3d@28=S_play3d@28 @15
+    _iSNDdirectstopbuf@4=S_stopbuf@4 @16

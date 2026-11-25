@@ -78,20 +78,18 @@ static void load_config(void)
     G.cfg_menu_linear = cfg_int(ini, "LinearMenus", 1);
     G.cfg_menu_fullres = cfg_int(ini, "MenuFullRes", 1);
     G.cfg_shots = cfg_int(ini, "Screenshots", 1);
-    G.cfg_cull_invert = cfg_int(ini, "CullInvert", 0);
     G.cfg_log = cfg_int(ini, "Log", NBA99_LOG_DEFAULT);
     G.cfg_overlay = cfg_int(ini, "Overlay", NBA99_DEBUG);
-    G.cfg_step_lock = cfg_int(ini, "StepLock", 0);
-    G.cfg_display_lock = cfg_int(ini, "DisplayLock", 0);
-    G.cfg_queue_skip = cfg_int(ini, "QueueSkip", 0);
+    G.cfg_step_lock = cfg_int(ini, "StepLock", 1);
+    G.cfg_display_lock = cfg_int(ini, "DisplayLock", 1);
+    G.cfg_queue_skip = cfg_int(ini, "QueueSkip", 1);
+    G.cfg_pace_log = NBA99_DEBUG ? cfg_int(ini, "PaceLog", 1) : 0;
     G.cfg_depth_wrap = cfg_int(ini, "DepthWrap", 1);
     { LARGE_INTEGER f; QueryPerformanceFrequency(&f); G.qpf_hz = f.QuadPart; }
     G.cfg_dump_frame = NBA99_DEBUG ? cfg_int(ini, "DumpFrame", 0) : 0;
-    G.cfg_judder = NBA99_DEBUG ? cfg_int(ini, "JudderLog", 0) : 0;
     GetPrivateProfileStringA("glide", "Gamma", "1.0", buf, sizeof buf, ini);
     G.cfg_gamma = (float)atof(buf);
     GetPrivateProfileStringA("glide", "CRT", "off", buf, sizeof buf, ini);
-    G.cfg_widescreen = cfg_int(ini, "Widescreen", 0);
     G.cfg_crt = !_stricmp(buf, "auto") || !strcmp(buf, "1") ? 1 : !_stricmp(buf, "sharp") || !strcmp(buf, "2") ? 2 :
                 !_stricmp(buf, "soft") || !strcmp(buf, "3") ? 3 : 0;
     if (G.cfg_gamma <= 0.1f || G.cfg_gamma > 5.0f) G.cfg_gamma = 1.0f;
@@ -162,15 +160,13 @@ static void conv(const GrVertex *s, GVtx *d)
     /* Some Glide games add 3<<18 to x/y to snap them to 1/16 pixel. */
     if (x >= 524288.0f) { x -= 786432.0f; if (!G.snap_seen) { G.snap_seen = 1; glog("vertex snapping offset detected"); } }
     if (y >= 524288.0f) y -= 786432.0f;
-    /* widescreen: 2D and front-end draws go into the 4:3 area in the middle of the wide
-       target; match 3D (layer 1) keeps 0..640 across the full width */
-    if (G.ws && !G.ws_layer) x = (x * G.sx + (float)G.c43_x) * ((float)FB_W / (float)G.rt_w);
     d->x = x; d->y = y;
     d->ooz = s->ooz;
-    /* A Voodoo keeps only the low 16 bits of an out-of-range depth value. NBA Live 99 draws the
-     * backgrounds of its in-match stat boxes with ooz 32768000 (500 x 65536), which on the card
-     * wraps to 0, the nearest depth, so the boxes cover the players. Clamping it to the far end,
-     * as a Direct3D depth range does, put the players and their reflections over the boxes. */
+    /* A Voodoo keeps only the low 16 bits of an out-of-range depth value; this does the same
+     * ([glide] DepthWrap=1). Found in NBA Live 98, whose in-match stat boxes used ooz 32768000
+     * (500 x 65536): on the card that wraps to 0, the nearest depth, so the boxes cover the
+     * players, while a Direct3D depth range clamps it to the far end. Not yet seen to matter in
+     * NBA Live 99 (the log line below shows whether it happens). */
     if (d->ooz >= 65536.0f && G.cfg_depth_wrap && (G.depth_mode == GR_DEPTHBUFFER_ZBUFFER ||
                                                   G.depth_mode == GR_DEPTHBUFFER_ZBUFFER_COMPARE_TO_BIAS)) {
         d->ooz -= 65536.0f * floorf(d->ooz / 65536.0f);
@@ -201,7 +197,6 @@ static int culled(const GrVertex *a, const GrVertex *b, const GrVertex *c)
     float dxAB, dxBC, dyAB, dyBC, area;
     int mode = G.cull_mode;
     if (mode == GR_CULL_DISABLE) return 0;
-    if (G.cfg_cull_invert) mode = (mode == GR_CULL_NEGATIVE) ? GR_CULL_POSITIVE : GR_CULL_NEGATIVE;
     dxAB = a->x - b->x; dxBC = b->x - c->x;
     dyAB = a->y - b->y; dyBC = b->y - c->y;
     area = dxAB * dyBC - dxBC * dyAB;
@@ -338,8 +333,7 @@ static void tri(const GrVertex *a, const GrVertex *b, const GrVertex *c)
 {
     GVtx v[3];
     if (culled(a, b, c)) return;
-    if (NBA99_DEBUG) { tr_tri(a, b, c); if (G.cfg_judder) jd_tri(a, b, c, g_caller); }
-    if (G.ws) d3d_ws_layer();
+    if (NBA99_DEBUG) tr_tri(a, b, c);
     palettes_update();
     conv(a, &v[0]); conv(b, &v[1]); conv(c, &v[2]);
     d3d_add_tris(v, 3);
@@ -354,7 +348,6 @@ static void quad_from(const GrVertex *a, const GrVertex *b, float ox, float oy)
     p[2].x += ox; p[2].y += oy; p[3].x += ox; p[3].y += oy;
     {
         GVtx v[6];
-        if (G.ws) d3d_ws_layer();
         palettes_update();
         conv(&p[0], &v[0]); conv(&p[1], &v[1]); conv(&p[2], &v[2]);
         conv(&p[0], &v[3]); conv(&p[2], &v[4]); conv(&p[3], &v[5]);
@@ -436,12 +429,12 @@ void GAPI grGlideGetVersion(char *version)
 }
 
 /*
- * The game's GrHwConfiguration is smaller than the Glide 2.43 SDK one (its
- * headers had fewer TMUs per board), and its renderer function pointers
- * (0x640054, 0x640058 = draw triangle) sit right behind its copy at 0x63FFBC.
- * Clearing the full SDK-sized struct wiped them and the first 3D frame called
- * address 0. So write only num_sst and board 0: type plus a 2-TMU Voodoo
- * config, 40 bytes in all, which fits every Glide 2.x layout.
+ * Write only num_sst and board 0 (type plus a 2-TMU Voodoo config, 40 bytes),
+ * never a full Glide 2.43 SDK-sized struct: a game built with older headers
+ * passes a smaller buffer (NBA Live 98 did, and clearing the SDK size wiped its
+ * renderer pointers). In NBA Live 99 the caller is EA's 3rash\voodooa.dll: it
+ * passes its own buffer at 0x60011518, and the next variable it uses starts
+ * 0x98 bytes further on, so 40 bytes fit with room to spare.
  */
 typedef struct {
     FxI32 num_sst;
