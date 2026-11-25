@@ -6,12 +6,15 @@
  * Ctrl+F11 shows or hides it at any time.
  *
  *   line 1: frames per second, frame time (avg, min-max), frames over 50 ms
- *   line 2: game simulation steps per second and the game clock (ticks per
- *           second, gap between ticks), from nba99core.dll's statistics
- *   line 3: how many new simulation steps each frame showed (0, 1, 2, 3+)
+ *   line 2: game simulation steps per second and the game clock (calls per
+ *           second of the game's timer callback, gap between them), from
+ *           nba99core.dll's statistics
+ *   line 3: frames that showed 0, 1, 2, 3+ new simulation steps in the last
+ *           second, and the frame pacing locks when one is on (lock, qpc, disp)
  *   graph:  the last 212 frame times (0 to 50 ms, lines at 16.7 and 33.3 ms),
- *           each bar coloured by the steps that frame showed: grey 0,
- *           green 1, yellow 2, red 3 or more (white without nba99core)
+ *           coloured by the steps each frame showed (grey 0, green 1, yellow 2,
+ *           red 3+; white without nba99core's statistics)
+ * (0.3.0: steps are counted in NBA Live 99 again, as in NBA Live 98.)
  *
  * Text is drawn with GDI into a small 32-bit DIB that is uploaded as a
  * texture each frame. Frame figures for the last second are also handed to
@@ -77,9 +80,9 @@ static void ov_count_frame(void)
     QueryPerformanceCounter(&now);
     core_stats();
     if (ov_stats) {
-        long s = ov_stats->sim_steps;
-        steps = ov_last_steps ? s - ov_last_steps : 0;
-        ov_last_steps = s;
+        long st = ov_stats->sim_steps;
+        steps = ov_last_steps ? st - ov_last_steps : 0;
+        ov_last_steps = st;
         InterlockedIncrement(&ov_stats->presents);
     }
     b = steps < 0 ? 0 : steps > 3 ? 3 : (int)steps;
@@ -111,8 +114,8 @@ static void ov_count_frame(void)
             ov_stats->r_ft_min = ov_ft_min;
             ov_stats->r_ft_avg = ov_ft_avg;
             ov_stats->r_ft_max = ov_ft_max;
-            memcpy(ov_stats->r_spf, ov_spf, sizeof ov_spf);
             ov_stats->r_long = ov_long;
+            memcpy(ov_stats->r_spf, ov_spf, sizeof ov_spf);
             InterlockedIncrement(&ov_stats->r_seq);
         }
         ov_w_frames = ov_w_long = 0;
@@ -172,7 +175,7 @@ static void ov_release(void)
 
 static void ov_text(void)
 {
-    char l1[96], l2[96], l3[96];
+    char l1[96], l2[128], l3[128];
     RECT r;
     int i;
     memset(ov_px, 0, OV_W * OV_GRAPH_Y * 4);

@@ -4,13 +4,16 @@
 #   ./build.sh main       Main only
 #   ./build.sh debug      Debug only
 # Output: dist/Main/ and dist/Debug/ (complete game-folder file sets: launcher,
-# DLLs, nba99fix.ini.default) and dist/NBALive99Fix-<version>-<Main|Debug>.zip.
+# DLLs, SDL3.dll, nba99fix.ini.default) and dist/NBALive99Fix-<version>-<Main|Debug>.zip.
 # Releases never contain nba99fix.ini: the launcher makes it from
 # nba99fix.ini.default on the first start, so copying a new release over an
 # install keeps the user's settings.
 # The Debug build also carries 3rash\voodoologa.dll (thrash_log: logs every call
-# the game makes to EA's 3D driver; off unless [nba99] ThrashLog=1).
-# Tools that are not part of a release (glide2x_log) are built to dist/Tools/.
+# the game makes to EA's 3D driver; off unless [nba99] ThrashLog=1) and
+# eacsnd_log.dll (eacsnd_log: logs every call the game makes to EA's sound DLL;
+# off unless [nba99] EacsndLog=1).
+# Tools that are not part of a release (glide2x_log, eacsnd_test) are built to dist/Tools/;
+# 'tools' also runs the 3D sound maths test (eacsnd/test/mixtest.cpp).
 set -e
 cd "$(dirname "$0")"
 SRC=$(pwd)
@@ -44,11 +47,16 @@ build() {   # $1 = Main or Debug
     res glide2x.dll "NBA Live 99 Glide 2 on Direct3D 11" 2
     $CC $CF -Wno-unused-function -shared -o $O/glide2x.dll glide2x/gl_api.cpp glide2x/gl_d3d.cpp glide2x/gl_win.cpp \
         glide2x/gl_stubs.cpp glide2x/glide2x.def $B/glide2x.dll.res -ld3d11 -ldxgi -luuid -lgdi32
+    res eacsnd.dll "NBA Live 99 sound on SDL3" 2
+    $CC $CF -shared -o $O/eacsnd.dll eacsnd/eacsnd.cpp eacsnd/eacsnd.def $B/eacsnd.dll.res
+    cp third_party/SDL3.dll third_party/SDL3-LICENSE.txt $O/   # SDL 3.2.26 (32-bit) with its zlib licence
     if [ $V = Debug ]; then
         mkdir -p $O/3rash
         res voodoologa.dll "NBA Live 99 THRASH call log (Debug tool)" 2
         $CC $CF -shared -o $O/3rash/voodoologa.dll thrash_log/thrash_log.cpp \
             thrash_log/thrash.def $B/voodoologa.dll.res -Wl,--enable-stdcall-fixup
+        res eacsnd_log.dll "NBA Live 99 sound DLL call log (Debug tool)" 2
+        $CC $CF -shared -o $O/eacsnd_log.dll eacsnd_log/eacsnd_log.cpp eacsnd_log/eacsnd_log.def $B/eacsnd_log.dll.res
     fi
     cp third_party/CRT-SHADERS-LICENSE.txt $O/              # MIT notice for the CRT shaders in glide2x.dll
     python3 tools/make_ini.py common/nba99fix.ini.in $V > $O/nba99fix.ini.default   # never nba99fix.ini (user settings)
@@ -56,8 +64,9 @@ build() {   # $1 = Main or Debug
     # nba99fix.ini (a release that carried it would overwrite the user's settings).
     for f in $(cd $O && find . -type f | sed 's|^\./||'); do
         case "$f" in
-            NBALive99.exe|nba99core.dll|glide2x.dll|nba99fix.ini.default|CRT-SHADERS-LICENSE.txt) ;;
+            NBALive99.exe|nba99core.dll|glide2x.dll|eacsnd.dll|SDL3.dll|SDL3-LICENSE.txt|nba99fix.ini.default|CRT-SHADERS-LICENSE.txt) ;;
             3rash/voodoologa.dll) [ $V = Debug ] || { echo "build: thrash_log is Debug only"; exit 1; } ;;
+            eacsnd_log.dll) [ $V = Debug ] || { echo "build: eacsnd_log is Debug only"; exit 1; } ;;
             *) echo "build: refusing to package $f (not a release file)"; exit 1 ;;
         esac
     done
@@ -72,6 +81,10 @@ tools() {   # not part of a release
     $CCC -O2 -Wall -shared -static-libgcc -o $T/glide2x_log/glide2x.dll glide2x_log/glide2x_log.c glide2x_log/glide2x.def \
         -Wl,--enable-stdcall-fixup
     cp glide2x_log/glide2x_log.ini $T/glide2x_log/
+    mkdir -p $T/eacsnd_test   # sound test for our eacsnd.dll (run in the game folder)
+    $CC -O2 -std=gnu++17 -fno-exceptions -fno-rtti -fno-threadsafe-statics -Wall -I$SRC/common -static-libgcc -s \
+        -o $T/eacsnd_test/sndtest.exe eacsnd/test/sndtest.cpp
+    g++ -O1 -Wall -o $SRC/build/mixtest eacsnd/test/mixtest.cpp && $SRC/build/mixtest   # 3D maths, on this machine
 }
 
 case "${1:-all}" in

@@ -11,18 +11,19 @@ Reference exe: EA's v1.1 `NBAWIN.EXE`, 2,488,320 bytes, SHA-256 `3563b929...fda5
 `./build.sh main`, `debug` or `tools` builds one. The version is in `VERSION`; every build is stamped with the UTC
 build time, e.g. `0.1.0 Debug (20261110.1048)`. Output:
 - `dist/Main/` and `dist/Debug/`: the full file set for the game folder (`NBALive99.exe`, `nba99core.dll`,
-  `glide2x.dll`, `nba99fix.ini.default`, `CRT-SHADERS-LICENSE.txt`; Debug also `3rash\voodoologa.dll`), plus
+  `glide2x.dll`, `eacsnd.dll`, `SDL3.dll`, `SDL3-LICENSE.txt`, `nba99fix.ini.default`, `CRT-SHADERS-LICENSE.txt`; Debug also `3rash\voodoologa.dll` and `eacsnd_log.dll`), plus
   `dist/NBALive99Fix-<version>-<build>.zip`. A release never contains `nba99fix.ini` or any file not on that
   list (the build refuses), so an update cannot overwrite the user's settings.
-- `dist/Tools/glide2x_log/`: the Glide call logger (not part of a release).
+- `dist/Tools/glide2x_log/`: the Glide call logger; `dist/Tools/eacsnd_test/sndtest.exe`: sound test for our
+  `eacsnd.dll` (neither is part of a release). `./build.sh tools` also runs `eacsnd/test/mixtest.cpp` (3D maths).
 - `build/` holds intermediate files only.
 
 | | Main (players) | Debug (testing) |
 |---|---|---|
-| Logs (`launcher.log`, `nba99core.log`, `glide2x.log`, `timing.log`) | off (`Log=1` in a section turns one on) | on |
+| Logs (`launcher.log`, `nba99core.log`, `glide2x.log`, `timing.log`, `eacsnd.log`) | off (`Log=1` in a section turns one on) | on |
 | Crash report | none (normal Windows behaviour) | log entry, `crash\nba99_<date>_<time>.txt` and `.dmp`, game closed cleanly, launcher shows where the report is |
 | System report at start (versions of our files, sizes of the game's DLLs, Windows or Wine version, CPUs, RAM, GPUs, displays, nba99fix.ini settings) | no | yes |
-| Diagnostics: `CrashTest`, `CrashDumpFull`, `LogFileOpens`, `ThreadDump`, `WatchAddr`, `ProfileStalls`, `ThrashLog` | compiled out | available |
+| Diagnostics: `CrashTest`, `CrashDumpFull`, `LogFileOpens`, `ThreadDump`, `WatchAddr`, `ProfileStalls`, `ThrashLog`, `EacsndLog`, `[sound] LogEffects` | compiled out | available |
 | Compiler | -O2, stripped | -O1 -g, frame pointers, symbols kept |
 
 Logs go to a folder per game start, `logs\<YYYY-MM-DD_HHMMSS>_<version>_<Main|Debug>_<computer>\`;
@@ -56,8 +57,9 @@ restricted subset so the files stay msvcrt-only and keep the Windows 98 path ope
 
 Tables in 0.1.0: `NBALive99.exe` imports KERNEL32, USER32, VERSION, msvcrt (no ADVAPI32: the exe check uses our own
 SHA-256). `nba99core.dll` imports ADVAPI32, KERNEL32, USER32, VERSION, WINMM, msvcrt and exports
-`nba99core_version`, `nba99core_stats`, `nba99core_set_clock_rate`. `glide2x.dll` is unchanged from 98 0.7.19 apart
-from the renames and the defaults below: 159 Glide exports.
+`nba99core_version`, `nba99core_stats`, `nba99core_set_clock_rate`. `glide2x.dll`: 159 Glide exports, imports
+unchanged from 98 0.7.19 apart from IsBadReadPtr (judder log, removed). The launcher no longer imports DeleteFileA
+(restart loop, removed).
 
 ## Function names (tools/watcom_names.py)
 
@@ -91,7 +93,9 @@ falling back to `3rash\softtria.dll`. A driver name starting with `voodoo` is th
 `d3d` Direct3D (getcardtype reads "3D Card" and "Thrash Driver"). The launcher passes `3dfx` (`[launcher] Args`).
 `THRASH_DRIVERNAME` cannot choose the driver: main (0x402400) deletes it from the environment at start.
 
-Restart support (`nba99data\restart.req`) is kept from 98 for later settings screens.
+The launcher waits for the game to close and logs its exit code (Debug: a crash message). NBA Live 98's restart
+after a settings change (`nba99data\restart.req`) was removed on 22 Nov 2026 (98 leftovers audit); a later
+settings screen brings it back if it needs it.
 
 ## Core (nba99core/nba99core.cpp, nba99core.dll)
 
@@ -140,13 +144,33 @@ Restart support (`nba99data\restart.req`) is kept from 98 for later settings scr
   first and ours is used.
 - **Threads:** every CreateThread from the exe and every timeSetEvent callback is logged. The game's threads start
   through the runtime's thread starter (entry 0x566ED0, the real function in the argument block) and
-  EACT_CreateThread / Playoff_CreateThread. CPU pinning (`PinGameThreads`) and safe termination (`SafeTerminate`)
-  are in but off by default until 99 shows the problems they fixed in 98.
+  EACT_CreateThread / Playoff_CreateThread. 98's CPU pinning (`PinGameThreads`, `GameCPU`) and safe
+  termination (`SafeTerminate`) were carried over switched off and removed in 0.3.0 (maintainer's decision, 25 Nov 2026): in every
+  99 log (both test PCs, up to 7.7 hours) the game never called TerminateThread (its one call site, 0x5671C1,
+  is a runtime helper), never set an affinity itself and ran on all CPUs without a freeze. TerminateThread calls
+  are still logged, and the process gets all CPUs back if a compatibility setting started it on one (seen on the
+  handheld test PC).
 - **nbatemp:** the stale `nbatemp\` cleanup from 98 (the game uses the same folder name).
-- **Timing:** `timing.inc` keeps only what needs no game addresses: the first timer callback is counted as the game
-  clock (Wine: 120 ticks/s, callback 0x547E50, as in 98), the per-second sampler and `timing.log`, and the machine
-  report. Simulation steps are not counted yet, PreciseClock is off by default, and `game_v11` in the stats stays 0
-  so glide2x never reads NBA Live 98 addresses.
+- **Timing:** `timing.inc`: the first timer callback is counted as the game clock (Wine: 120 ticks/s, callback
+  0x547E50, EA's timer server as in 98: a one-shot timeSetEvent re-armed from GetTickCount), the per-second sampler
+  and `timing.log`, and the machine report. PreciseClock is on by default since 0.3.0 (see Frame pacing below).
+  The shared stats struct (`common/nba99_stats.h`) restarted at version 1 on 22 Nov 2026; version 2 (0.3.0) adds
+  `r_spf`.
+- **Simulation steps and input frames (0.3.0, counting only):** 99's match loop has the same shape as 98's.
+  `normalgameloop` (0x4382C0) runs one simulation step, `singleailoop` (0x437C80), for every input frame
+  (`ctrlvalsready`, then draws with `drawview`). Its first five bytes (push ebx, ecx, esi, edi, ebp) jump to a thunk
+  that counts the step and does the same pushes. The input task `ctrlinterrupt` (0x40D050) counts timer ticks in
+  0x5FE4D8 and samples the controllers every 2 ticks (4 online), resetting it to 0, like 98's 0x42E4A0; its
+  registration at 0x40CECB and removal at 0x40CF00 (`mov eax, 0x40D050`) load our wrapper, which counts a frame when
+  0x5FE4D8 is 0 after the task. Both are checked byte for byte. `timing.log` has `steps` and `inp` per second and
+  the frames that showed 0/1/2/3+ new steps; the overlay is three lines again (steps per second; steps per frame)
+  with bars coloured by steps (grey 0, green 1, yellow 2, red 3+).
+- **File totals (0.3.0, Debug, profile.log):** once a minute a "minute" block with every file call the exe made
+  (main thread and other threads, count and time, KB read and written) and the 12 files opened most often, for the
+  network-drive measurements. The exe has the same file patterns as 98: EA's file library resolves names with
+  GetFullPathName, GetVolumeInformation and FindFirstFile (0x590300), and the game uses `nbatemp\` and the speech
+  `*DATA.VIV` / `*HDRS.VIV` banks; the 98 fixes (drive info cache, temp file buffer, speech in memory) are ported only
+  if these figures show the same costs.
 - **ThrashLog=1 (Debug):** the driver path at 0x5FD0C4 becomes `3rash\voodoologa.dll` (still starting with
   `voodoo`), and the virtual registry answers "Thrash Driver" = `voodoolog`.
 
@@ -218,10 +242,15 @@ not minimised, which must not pull the game back in front of the player; 0x5504A
 ## glide2x.dll (from 98 0.7.19)
 
 Started from 98's code (Glide 2.60 on Direct3D 11, 159 exports, borderless 4:3 output, mouse mapping, overlay, CRT
-filter, screenshots), renamed, with the 99 changes below. The wrapper is specific to NBA Live 99: 98's other features
-stay in the code switched off (`StepLock`, `DisplayLock`, `QueueSkip`, `JudderLog`, `Widescreen`, `CullInvert`, all 0
-in `nba99fix.ini`) until it is confirmed whether 99 needs them; the pacing locks need core counters at 98 addresses.
-With `game_v11` = 0 from the core, nothing in glide2x reads game memory.
+filter, screenshots), renamed, with the 99 changes below. The wrapper is specific to NBA Live 99.
+
+**98 leftovers audit (22 Nov 2026, project doc `nba99-98-leftovers-audit.md`).** Removed: the judder log and
+presentation statistics (`gl_judder.inc`, `JudderLog`; they read 98's camera and object table), widescreen
+(`Widescreen`, the 4:3-area layer, the "ws probe"; read 98's screen state byte), the gamepad menu box (`nav_draw`,
+`ps_navbox`), the options menu's live CRT switch, the distance detail feed (`render_h`), `game_v11`, `CullInvert`,
+the steps line and step colours in the overlay, and `glide2x_log/test/aff_test.c`. Nothing in glide2x reads game
+memory now. Kept: the frame pacing locks (`StepLock`, `DisplayLock`, `QueueSkip`, with the core's `PreciseClock`),
+switched on in 0.3.0 once the core counted 99's steps and input frames (see Frame pacing below).
 
 Changes for 99:
 - **NBA Live 98's full-resolution pause pictures removed (FullResPause).** The 99 front end draws its menus over a
@@ -278,6 +307,124 @@ stack, log the result and return to the game; the game's return address is kept 
 First Wine log: setstate, about, init, `THRASH_setvideomode(1, 2, 1)` from 0x58B148 (the THRASH library's own
 mode numbers, from the call 640, 480, 16 in startthrash at 0x401731/0x401748), window 1/2/0 with lockwindow and
 unlockwindow, then clearwindow, settexture, drawtri, flushwindow, sync and readrect (RunAlphaTests at 0x4BFD90).
+
+## Sound DLL call log (eacsnd_log/, eacsnd_log.dll, Debug)
+
+Sits between the exe and the sound DLL and passes every call on unchanged; first step of 0.2.0 (sound on SDL3).
+`[nba99] EacsndLog=1` makes the core redirect the exe's `LoadLibraryA("eacsnd.dll")` (0x56AD31, exact name only) to
+`eacsnd_log.dll` in the game folder; the proxy loads `eacsnd_ea.dll` (EA's DLL, copied to that name before ours
+replaced it) or, without that file, `eacsnd.dll` (`[eacsndlog] Real=`), by full path on the first call, and writes
+`eacsnd_log.txt` in the session's log folder:
+- every call to dllversion, setfunctions, caps, start, stop and the record functions, with arguments, result, the
+  exe address that called and the thread;
+- the first 400 calls (`[eacsndlog] First=`) of vol, pos3d, rate, create3dbuf, removebuf, play3d, stopbuf and of the
+  callbacks voice_ended, position (with the x y z it returned) and decode, the same way; every message callback;
+- a TICK line for every second with calls in it: counts per function and callback, mixer frames, serve gap
+  min/avg/max ms;
+- call counts at exit.
+
+EA's DLL (99, 42,496 bytes, Watcom, imports only `DSOUND!DirectSoundCreate`) has 16 stdcall exports:
+`_iSNDdllversion@0` (returns 0x00100003), `_iSNDdirectsetfunctions@32`, `_iSNDdirectcaps@4` (format probe, bit
+0x800 = 22050 Hz), `_iSNDdirectstart@8`, `_iSNDdirectstop@0`, `_iSNDdirectrecordstart@16` / `recordpacket@4` /
+`recordstop@0` (stubs: -1, 0, 0), `_iSNDdirectserve@0`, and the 3D set `vol@8`, `pos3d@12`, `rate@8`,
+`create3dbuf@28`, `removebuf@4`, `play3d@28`, `stopbuf@4`. serve works as in 98: it fills the stream from callback 1
+(the game's mixer) and calls callback 5 (the game's tick) every rate/100 samples. The 3D voices (up to 16) are
+DirectSound 3D buffers made from sample sources (up to 64) that the game's decoder (callback 8) writes; pos3d gets
+the position from callback 7 and scales it by 1/65536; the listener is never set. Effects played through the
+game's own mixer never reach the DLL (the effect log for 0.4.0 needs an exe hook for those).
+
+## eacsnd.dll on SDL3 (eacsnd/, 0.2.0)
+
+Our replacement for EA's `eacsnd.dll`: the same 16 exports, names and ordinals (checked against EA's export table),
+on an SDL3 audio stream, so DirectSound is no longer loaded. Needs `SDL3.dll` (32-bit, SDL 3.2.26, zlib licence,
+`third_party/`, in both releases) next to the exe. Settings `[sound]`: `LatencyMs` (40), `DeviceFrames` (0),
+`Device` (part of a device name; empty = the Windows default, followed when it changes), `Volume` (100),
+`Mode3D` (speakers, stereo, off), `Log`, `LogEffects` (Debug).
+
+- **Stream (as 98):** all mixing happens in `serve()`, which the game calls from its timer (0x56B174) under its sound
+  lock. The queue is kept `LatencyMs` ahead with the game's mixer (callback 1), and the game's 100 Hz tick
+  (callback 5) is called between mix chunks at EA's sample-accurate spacing (`rate * n / 100`, rounded down to 16
+  frames, the rounding carried, counters reset after 30000). Format as the game asks: it passes the caps bits
+  back to start (logged with EA's DLL on Windows 11: 0x808), so 22050 Hz stereo 16-bit (EA's order of preference
+  is kept). The output is float at the game's rate with the
+  device's channel count (up to 8); the game's stereo goes to front left and right; SDL converts to the device.
+- **3D voices:** EA's DLL reports 0x20000 only when DirectSound has hardware 3D buffers; on Windows 11 it has
+  none, so with EA's DLL the game used no 3D voices (logged: caps 0x3E0F, start 0x808, no 3D call). Ours reports
+  0x20000, but the first game run with it (25 Nov 2026, caps 0x23E0F) still started with 0x808 and made no 3D
+  call: caps alone do not turn the 3D voices on, and the game mixes every sound into its own stereo stream. What
+  enables them (a game setting or another start flag) is still to be found; the 3D path below is ready for it. Ours keeps up to 63 sources (16-bit mono, written by the game's decoder, callback 8, exactly
+  as EA's DLL asked for them) and 16 voices, mixed in `serve()` after the game's mix: linear resampling at the voice's
+  rate, the game's volume 0..127 as a linear amplitude (EA's table is 20·log10(v/127) in hundredths of a dB),
+  gain changes ramped over 64 frames. Position: callback 7 turns the game's two angles into a direction (EA's
+  DLL scaled it by 1/65536 and passed it to SetPosition; the listener was never set), so it is a unit vector in
+  DirectSound's axes (+x right, +y up, +z ahead) and only the direction counts; distance would follow
+  DirectSound's default rolloff (1/d beyond 1). `eacsnd/mix3d.inc` pans it: layouts with rear speakers (4.0, 5.0,
+  5.1, 6.1, 7.1) get VBAP between the two speakers either side; front-only layouts get a constant-power
+  left/right pan from the sideways component (a sound behind is heard on its side). `Mode3D=stereo` uses the
+  left/right pan on any layout; `Mode3D=off` puts every 3D sound in the centre. Finished voices are stopped and
+  reported to the game (callback 2) from `serve()`, as EA's DLL did after a fill; `stopbuf` also reports, as EA's.
+  Game code is never called while our voice lock is held.
+- **Recording:** `recordstart` -1, `recordpacket` 0, `recordstop` 0, exactly as EA's DLL (never finished by EA).
+- **Not ported from EA's DLL:** the abort callback (3) on errors; ours logs the error (first 200) and returns
+  the failure value instead of stopping the game.
+- **Logs:** `eacsnd.log` (Debug, or `Log=1`): settings, output devices, device and format, per minute the serve
+  calls, underruns, longest gap between serves, 3D voices started and the most at once. `effects.log` (Debug,
+  `LogEffects=1`): every 3D source loaded (id, the game's two numbers, sample pointer, length, rate) and every 3D
+  sound started (voice, source, rate, volume, loop, the game's angles and the direction in degrees), for the
+  0.4.0 rumble work. Effects the game mixes itself (callback 1) never reach the DLL; logging those needs an exe hook
+  (to do once the call log shows which).
+- **Tests:** `eacsnd/test/mixtest.cpp` (built and run by `./build.sh tools`): panning on every layout, constant
+  power, Mode3D, distance, volume curve, resampling, looping, end of sound, gain ramp. `dist/Tools/eacsnd_test/
+  sndtest.exe` (Windows, in the game folder): version, caps, start, a sound placed front, right, behind and left
+  and circling, the end-of-sound report, and 100 ticks per second of sound.
+- The launcher's version check now includes `eacsnd.dll` (EA's has no version resource, so a release copied
+  without it is warned about).
+
+## File speed (0.3.0: CacheDriveInfo, BufferTempFiles, SpeechInMemory)
+
+Ported from NBA Live 98 after measuring 99 (`profile.log` minute blocks, network drive against local drive, 22 Nov
+2026). EA's file library opens every file under a per-drive lock (0x590A8D) and asks for the drive's free space
+inside it (0x590ADC); the streaming thread reopens the commentary banks for every line; the team load builds
+`nbatemp\$nbalst*.tmp` in about 950 small writes. From a network drive that gave a 100 to 1000 ms frame every few
+seconds in matches (the main thread waiting on the lock) and a 30 s team load; from a local drive no slow frames in
+play. All three default to on in both builds:
+- `fscache.inc` (`CacheDriveInfo`): free space kept 5 s per drive root, volume details and drive type for the session.
+- `tempbuf.inc` (`BufferTempFiles`): files in `nbatemp\` opened for writing are kept in memory while open and written
+  in one go on close (as 98; an overlapped or unbuffered temp open, not seen, is logged once and left alone).
+- `spchmem.inc` (`SpeechInMemory`): every file in `speech\<folder>\`, its `update\` and `user\` (about 142 MB for
+  the English install) is read by an idle-priority thread 3 s after start; read-only opens of a file in memory get
+  an event handle and every file call on it is answered from memory (overlapped reads complete at once; 13 calls
+  hooked, as 98 plus GetOverlappedResult). New for 99: read-only opens that Windows answered "not found" under
+  `speech\` or of a `.dat`/`.hdr` name in the game folder (the per-player `user\`, `update\` and bare-name look-ups)
+  are answered "not found" from a list; any write open, delete or move clears the list.
+The counts are logged in `nba99core.log` when the game closes.
+
+NBA Live 99 also maps some speech banks into memory (EA's file library, 0x590BA4: CreateFileMappingA with
+`PAGE_READONLY | SEC_COMMIT`, then MapViewOfFile `FILE_MAP_READ` of the whole file), which 98 never did. Refusing
+the mapping aborted the match load ("typeofbigfile - NO BIG FILE SET", 23 Nov 2026). The first mapping of a bank
+now moves its memory copy into an unnamed page-file section (moved, not doubled) and every mapping gets a duplicate
+handle of that section.
+
+## Frame pacing (0.3.0: PreciseClock, StepLock, DisplayLock, QueueSkip)
+
+Measured on 99 before switching on (timing.log, 22 to 25 Nov 2026, handheld test PC at 59 Hz and desktop test PC at 60 Hz): the
+game clock ticks about 120 times a second but 1 to 21 ms apart (EA's timer server re-arms a one-shot timeSetEvent
+from GetTickCount against a 16.16 deadline at 0x6E4010, as in 98); matches run 60 steps and 60 input frames a second;
+the frames shown drift against the steps, so in some seconds every frame showed one step and in others 15 to 20 a
+second showed none and as many showed two (one 25 Nov quarter: 11,683 frames with one step, 920 with none, 735 with
+two or more). It showed as judder in animation and camera movement. 99's timer and match loop have the same shape
+as 98's, so the 98 locks are switched on unchanged, all default 1:
+- `[nba99] PreciseClock`: the exe's GetTickCount is a QueryPerformanceCounter millisecond clock, timer resolution
+  1 ms; the clock speed can be steered (`nba99core_set_clock_rate`, 0.97 to 1.03).
+- `[glide] StepLock`: in a match each swap waits for one more input frame than the last (at most 50 ms), so every
+  frame shows exactly one step; 2 shows every other step (30 frames a second).
+- `[glide] DisplayLock`: steers the game clock to the display (DWM timing) so presents fall halfway between two
+  refreshes: 59.94 Hz runs the game 0.1% slower; 120 Hz shows each frame for two refreshes. Other rates (75, 100,
+  144 Hz) leave the lock off: the step lock still presents an even 60 frames a second, which a variable refresh
+  screen (G-Sync, FreeSync) shows as they come; a fixed-refresh screen at such a rate shows them unevenly.
+  When the lock starts (match start) or the averaged phase drifts more than 0.2 from the middle, it steers 20 times
+  harder (at most 1.5%) until the phase is within 0.08: about half a second instead of 1 to 2 s near a refresh.
+- `[glide] QueueSkip`: with VSync=1, after 30 blocked presents one frame is not shown to empty the display queue.
 
 ## glide2x_log (dist/Tools/glide2x_log)
 

@@ -33,6 +33,20 @@
 ; Stop the game switching the monitor to 640x480 through DirectDraw, so our
 ; glide2x.dll can use the desktop resolution (1 = yes, default)
 ;KeepDesktopMode=1
+;
+; File speed (0.3.0; matter most when the game is on a network drive):
+; Remember drive details (free space, volume name, drive type) instead of
+; asking Windows again on every file the game opens (1 = yes, default)
+;CacheDriveInfo=1
+; Keep the game's temp files (nbatemp\) in memory while it writes them, and
+; write each to the disk in one go when it is closed (1 = yes, default)
+;BufferTempFiles=1
+; Keep the commentary files (speech\..., about 140 MB) in memory: they are read
+; in the background a few seconds after start, and from then on a commentary
+; line costs no disk or network time (each line was a short hitch in matches
+; from a network drive). Look-ups of commentary files that do not exist are
+; also answered from memory. 1 = yes (default), 0 = as the original game.
+;SpeechInMemory=1
 ; At start, delete a nbatemp\ folder left behind when the game was closed with
 ; Alt+F4 or crashed (1 = yes, default). The game deletes it itself on a
 ; normal quit. Skipped while another copy of the game runs from this folder.
@@ -55,30 +69,26 @@
 ; dial-up autodial). 0 (default) leaves the registry as it was; 1 lets the
 ; game write it.
 ;RegistryWrites=0
-; Pin only the game's own threads to one CPU (1 = yes; default 0 in 0.1,
-; until NBA Live 99 shows the problem this fixed in NBA Live 98)
-;PinGameThreads=0
-; Which CPU the game's threads use with PinGameThreads=1 (default -1 = the
-; lowest available)
-;GameCPU=-1
-; Stop the game's worker threads only at a safe point (holding no lock) when
-; the game kills them (1 = yes; default 0 in 0.1, as above)
-;SafeTerminate=0
 ; Write logs\nba99core.log (1 = yes; default {LOG})
 ;Log={LOG}
 ; Write logs\timing.log: one line per second with the game clock and frame
 ; figures (1 = yes; default {LOG})
 ;TimingLog={LOG}
-; Precise game clock (default 0 in 0.1): give the game a 1 ms accurate
-; GetTickCount. In NBA Live 98 this smoothed the game clock; for 99 it comes
-; with frame pacing in a later release.
-;PreciseClock=0
+; Precise game clock (1 = on, default): give the game a 1 ms accurate
+; GetTickCount, so its 120 Hz clock ticks evenly (part of the frame pacing,
+; see [glide] StepLock and DisplayLock). 0 = the Windows clock, as the game had.
+;PreciseClock=1
 ;@debug
 ; THRASH call log (0 = off, default): 1 makes the game load
 ; 3rash\voodoologa.dll (in the Debug release), which logs every call the game
 ; makes to EA's 3D driver to thrash_log.txt in the logs folder and passes it on
 ; to 3rash\voodooa.dll.
 ;ThrashLog=0
+; Sound DLL call log (0 = off, default): 1 makes the game load eacsnd_log.dll
+; (in the Debug release) instead of eacsnd.dll; it logs every call the game
+; makes to the sound DLL, and every call back into the game, to
+; eacsnd_log.txt in the logs folder and passes it on ([eacsndlog] Real).
+;EacsndLog=0
 ; Crash report: exception, registers and call stack in nba99core.log, plus a
 ; minidump in the crash folder (1 = yes, default)
 ;CrashLog=1
@@ -112,6 +122,19 @@
 ;First=40
 ;@end
 
+;@debug
+[eacsndlog]
+; Settings for eacsnd_log.dll (EacsndLog=1 above).
+; Sound DLL in the game folder to pass the calls on to. Default: eacsnd_ea.dll
+; (EA's own eacsnd.dll, copied to that name before our eacsnd.dll replaced it),
+; or eacsnd.dll if there is no eacsnd_ea.dll.
+;Real=
+; Calls logged in full for each 3D function and callback (default 400). Setup
+; calls (dllversion, setfunctions, caps, start, stop) and messages are always
+; logged. After that, one TICK line per second with the call counts.
+;First=400
+;@end
+
 [glide]
 ; Settings for our glide2x.dll (Glide 2 on Direct3D 11), which EA's Voodoo
 ; driver (3rash\voodooa.dll) draws through. The game draws a 640x480 screen.
@@ -128,16 +151,23 @@
 ;VSync=0
 ; Frame rate cap used when VSync=0 (default 60)
 ;FrameLimit=60
-; Frame pacing locks (StepLock, DisplayLock, QueueSkip): default 0 in 0.1.
-; They need the game's clock and simulation step counters, which come in a
-; later release for NBA Live 99.
-;StepLock=0
-;DisplayLock=0
-;QueueSkip=0
-; Widescreen matches (NBA Live 98 feature, default 0 in 0.1): 1 draws the
-; match 3D across the whole width of a wide monitor. Not yet checked in
-; NBA Live 99.
-;Widescreen=0
+; Frame pacing (from NBA Live 98, on by default since 0.3.0). In a match the
+; game runs one step per input frame on its own clock; without these locks the
+; frames shown drift against it, so some show no new step and the next shows
+; two (judder in animation and camera movement).
+; StepLock: each frame waits for the game's next input frame, so every frame
+; shows exactly one step (1, default); 2 shows every other step (an even 30
+; frames a second, for slow PCs); 0 = off.
+;StepLock=1
+; DisplayLock: steers the game clock to the screen's refresh (under 1%, e.g.
+; 0.1% slower on a 59.94 Hz screen) so each frame lands halfway between two
+; refreshes. Works on 60 Hz class and 120 Hz screens; at other rates (100,
+; 144 Hz) it stays off and frames come at an even 60, smooth with G-Sync or
+; FreeSync. Needs StepLock and [nba99] PreciseClock. 1 = on (default), 0 = off.
+;DisplayLock=1
+; QueueSkip: with VSync=1, when frames start waiting in the display queue,
+; one frame is not shown to clear it. 1 = on (default), 0 = off.
+;QueueSkip=1
 ; Full-resolution 3D behind the menus (default 1). NBA Live 99 draws its menus
 ; over a live 3D arena at 640x480. With 1 the arena stays at full resolution
 ; and only the menus come from the game's 640x480 picture. 0 shows the game's
@@ -151,11 +181,9 @@
 ; see the key; it works in the menus and in matches). 0 = off.
 ;Screenshots=1
 ; Depth values past the 16-bit range wrap around, as on a real Voodoo card
-; (default 1).
+; (default 1). Found in NBA Live 98 (stat boxes under the players); not yet
+; seen to matter in NBA Live 99.
 ;DepthWrap=1
-; Swap the Glide cull direction (NBA Live 98 test setting, default 0). Only
-; for testing missing or inside-out polygons.
-;CullInvert=0
 ; Smooth (1, default) or sharp pixel (0) scaling of the final picture
 ;LinearScaling=1
 ; Extra brightness on top of the game's own gamma (default 1.0)
@@ -170,13 +198,43 @@
 ; Write logs\glide2x.log (1 = yes; default {LOG})
 ;Log={LOG}
 ;@debug
+; Pace log (1 = on, default in the Debug build): logs\pace.log, one line per
+; second of a match and one per uneven frame, showing where the time between
+; two frames went (game, flush, step lock wait, present) and where each present
+; fell in the refresh.
+;PaceLog=1
 ; Save the picture as logs\glide_frame_N.bmp at frame N, or every N frames if
 ; negative (0 = off, default)
 ;DumpFrame=0
-; Judder log (NBA Live 98 feature, default 0): judder.log in the session's log
-; folder, with the timing of frames that came late or early.
-;JudderLog=0
 ; Ctrl+F10 traces one frame: every draw in order, with its depth, blend and
 ; texture state and the code that made it, in logs\glide_trace_N.txt, plus a
 ; picture of that frame (logs\glide_frame_N.bmp).
+;@end
+
+[sound]
+; Settings for our eacsnd.dll (the game's sound through SDL3; needs SDL3.dll
+; next to the game). Replaces EA's eacsnd.dll and DirectSound.
+; How far ahead the game's mixer is kept, in ms (default 40). Lower = less
+; delay, higher = safer against crackle if the game stalls.
+;LatencyMs=40
+; Audio device buffer size in sample frames (default 0 = SDL's choice)
+;DeviceFrames=0
+; Output device: part of its name as Windows shows it, e.g. Device=Headset
+; (default empty = the Windows default device, followed when it changes)
+;Device=
+; Master volume in percent (default 100). The game's own sliders work as before.
+;Volume=100
+; 3D sounds (default speakers): speakers = placed round the listener across the
+; speakers Windows reports (stereo, 4.0, 5.1, 7.1); stereo = left and right
+; only; off = all 3D sounds in the centre. Only used when the game turns its 3D
+; sounds on (not yet seen: it mixes everything to stereo itself).
+;Mode3D=speakers
+; Write logs\eacsnd.log: output device and format, and per minute the serve
+; calls, underruns and 3D voices (1 = yes; default {LOG})
+;Log={LOG}
+;@debug
+; Effect log (0 = off, default): logs\effects.log gets one line for every 3D
+; sound the game loads and starts, with its numbers and direction (for the
+; gamepad rumble work).
+;LogEffects=0
 ;@end
