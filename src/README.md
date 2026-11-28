@@ -351,8 +351,15 @@ on an SDL3 audio stream, so DirectSound is no longer loaded. Needs `SDL3.dll` (3
 - **3D voices:** EA's DLL reports 0x20000 only when DirectSound has hardware 3D buffers; on Windows 11 it has
   none, so with EA's DLL the game used no 3D voices (logged: caps 0x3E0F, start 0x808, no 3D call). Ours reports
   0x20000, but the first game run with it (25 Nov 2026, caps 0x23E0F) still started with 0x808 and made no 3D
-  call: caps alone do not turn the 3D voices on, and the game mixes every sound into its own stereo stream. What
-  enables them (a game setting or another start flag) is still to be found; the 3D path below is ready for it. Ours keeps up to 63 sources (16-bit mono, written by the game's decoder, callback 8, exactly
+  call: caps alone do not turn the 3D voices on, and the game mixes every sound into its own stereo stream.
+  Investigated 25-26 Nov 2026: `snd_init` (0x467BB2) always starts sound in auto mode, `iSNDinit(-1, -1)`, and
+  `iSNDverifymode` (`cmn\sinit.c`) drops the 3D bits in auto mode (0x56A822: `cmp ecx,-1 / jne / xor esi,esi`),
+  so 3D never came on with any DLL or card. Turning that `xor` into nops (an experiment, not kept) made the game
+  start with 0x20808, but it still created no 3D buffer: a sound is only made 3D when its bank header has tag 0x92
+  set to 2 (`iSNDplatformresolve`, `win\sdresolv.c`, 0x5B8207), and none of the 118 sound headers in the court,
+  crowd, front-end, three-point, Venice Beach and commentary-effect banks has that tag. The shipped data has no 3D
+  sounds, so the game's sound stays stereo (with the game's own left/right panning). The 3D path below is kept but
+  not used. Ours keeps up to 63 sources (16-bit mono, written by the game's decoder, callback 8, exactly
   as EA's DLL asked for them) and 16 voices, mixed in `serve()` after the game's mix: linear resampling at the voice's
   rate, the game's volume 0..127 as a linear amplitude (EA's table is 20·log10(v/127) in hundredths of a dB),
   gain changes ramped over 64 frames. Position: callback 7 turns the game's two angles into a direction (EA's
@@ -425,6 +432,61 @@ as 98's, so the 98 locks are switched on unchanged, all default 1:
   When the lock starts (match start) or the averaged phase drifts more than 0.2 from the middle, it steers 20 times
   harder (at most 1.5%) until the phase is within 0.08: about half a second instead of 1 to 2 s near a refresh.
 - `[glide] QueueSkip`: with VSync=1, after 30 blocked presents one frame is not shown to empty the display queue.
+
+## Gamepads (0.4.0: nba99core/pad_input.inc, pad_ini.inc; [input])
+
+How 99 reads controllers (static analysis of the v1.1 exe, 26 to 28 Nov 2026): EA's input library calls WINMM
+`joyGetNumDevs` once at start (0x585360), then `joyGetDevCapsA` and `joyGetPosEx` (0x5853B0, 0x585630).
+`ControllerUpdater` (0x4EDC90, the game's input thread) keeps 4 device records and re-reads all four every second,
+so the game has its own hot-plug. A device's name is the Windows 9x DirectInput name in the registry, else
+`szPname`; its config is looked up as `<name>_<buttons>_Slot<n>` / `<name>_<buttons>` in `devcfgs.ini`, then
+`inpdevs.ini`, then `DefaultNN` by button count, then a built-in numbered default. Each poll keeps X, Y and the
+button bits only (no POV, no Z). Four slots: 1 and 2 pads only, 3 and 4 pad 3/4 or the keyboard sets (the game's
+"8 users" are 4 per PC online).
+
+What we do (`Gamepads=1`, default):
+- The three joy* imports answer from SDL3 gamepads (SDL3.dll loaded at run time, the one eacsnd.dll uses; gamepad
+  subsystem only, never quit). 4 devices from the start; a replugged pad returns to the slot its model last had.
+- Names by SDL type through `szPname`: "Xbox controller", "PlayStation controller", "Switch controller",
+  "Gamepad" (the registry name lookup answers "not found" while gamepads are on). 12 buttons in the XInput
+  joystick order: 1 A/Cross, 2 B/Circle, 3 X/Square, 4 Y/Triangle, 5 LB/L1, 6 RB/R1, 7 Back/Select, 8 Start,
+  9 L3, 10 R3, 11 LT/L2, 12 RT/R2 (triggers as buttons). D-pad and left stick on X/Y.
+- `inpdevs.ini` is served (GetPrivateProfileIntA/StringA hooked): the user's own file plus our four sections with
+  each family's button names and our default layout, the NBA Live 99 PlayStation layout with L1/L2 and R1/R2
+  swapped (turbo RT, direct pass/switch LT, shoot/hand check B, pass/switch A, pivot/jump Y, crossover/steal X,
+  direct shoot/last man back LB, fake/face up RB, play calling Back, pause Start). A section of the same name in
+  the user's file wins. Written to `%TEMP%\NBALive99\inpdevs.ini` at start.
+- Menus: the game turns a slot's shoot binding into Enter and its pass binding into Esc in the front end; we make
+  A/Cross press the shoot binding and B/Circle the pass binding there (front-end state read, not written), so A
+  accepts and B goes back whatever the layout. No menu navigation (the menus have none on the keyboard either).
+- `Stick=auto` (default): the game's own Analog Mode per controller (`analogmode` in devcfgs.ini) decides: on =
+  the stick as it is, and the game steers between the 8 directions by how far it is pushed
+  (`tst_controller_value` 0x4EE250, `convertjoydir` 0x4343B0); off = clean 45 degree sectors. `8way` / `raw`
+  force one. `Deadzone` (default 20%).
+- Debug: `NBA99_TEST_PAD=<file>` attaches a virtual Xbox-type pad read from a text file; every config look-up is
+  logged ("controller config: [section] in file: found / not there").
+
+## Rumble (0.4.0: nba99core/rumble.inc; [input] Rumble, [rumble])
+
+The PC game has no vibration; ours follows the PlayStation version's events (matched to the PC's named events by
+EA's shared crowd event strings; reference only) plus three of our own. Events come from the exe's named
+`event_*` functions: their call sites are pointed at small thunks that read the players and go on to EA's function
+unchanged (15 sites, each changed only if it still calls EA's function). The int16 at +4 of an on-court player's
+object (`[0x6417B8 + 4p]`) is the controlling user (-1 = CPU); offline user n reads slot n.
+
+| ini key | Event (EA function) | Who feels it |
+|---|---|---|
+| Dunk | a dunk's basket (event_startdunk, then event_basket within 3 s) | the dunker, at the slam |
+| HangOnRim | hanging on the rim (event_hangrim, empty on PC but still called every step from anewdunk) | that player, for the whole hang |
+| Block, Steal | event_block, event_steal | the blocker, the stealer |
+| HardContact(By), Contact(By), KnockedDown(By) | event_playerhardhit, event_playerhit, event_playerfall | the player knocked off balance or down, and the one who caused it |
+| HitsFloor, Injury, JumpBall, Basket | event_playerhitsground, event_injury, event_tipoff, event_basket | that player |
+
+Engine: 0.1 s steps with a big-motor and a buzz-motor strength each, events mix (capped), `SDL_RumbleGamepad` on
+the input thread, no limit on pads; a repeat of the same event for the same player within 150 ms is dropped.
+`[input] Rumble` = off, low (60%), medium (100%, default), high (150%) or a percent up to 200; `[rumble] <key>` =
+percent of that event (0 = off, up to 200). Debug: every event logged; Ctrl+F9 plays the Dunk pattern on every
+pad. Online games (users 4 to 7) never vibrate a pad here (0.8.0).
 
 ## glide2x_log (dist/Tools/glide2x_log)
 

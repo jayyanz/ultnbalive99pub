@@ -226,8 +226,8 @@
 ;Volume=100
 ; 3D sounds (default speakers): speakers = placed round the listener across the
 ; speakers Windows reports (stereo, 4.0, 5.1, 7.1); stereo = left and right
-; only; off = all 3D sounds in the centre. Only used when the game turns its 3D
-; sounds on (not yet seen: it mixes everything to stereo itself).
+; only; off = all 3D sounds in the centre. NBA Live 99 itself never uses 3D
+; sounds (it mixes everything to stereo), so this has no effect in the game.
 ;Mode3D=speakers
 ; Write logs\eacsnd.log: output device and format, and per minute the serve
 ; calls, underruns and 3D voices (1 = yes; default {LOG})
@@ -238,3 +238,49 @@
 ; gamepad rumble work).
 ;LogEffects=0
 ;@end
+
+[input]
+; Gamepads through SDL3 (needs SDL3.dll next to the game). Any pad SDL knows
+; works (Xbox, PlayStation, Nintendo and others), up to the game's 4
+; controller slots: slots 1 and 2 are pads only, slots 3 and 4 are pad 3 and
+; pad 4 when plugged in, otherwise the two keyboard sets. Pads can be plugged
+; in and out while the game runs; a replugged pad goes back to its slot.
+; 1 = on (default), 0 = off (the game reads Windows joysticks itself, as in 1999)
+;Gamepads=1
+; Left stick dead zone in percent (default 20)
+;Deadzone=20
+; Left stick: auto (default) follows the game's own Analog Mode setting for
+; that controller (Configure Controller): off = clean 8 directions like a
+; D-pad, on = the stick as it is, so the game steers between the 8
+; directions by how far the stick is pushed. 8way or raw forces one.
+;Stick=auto
+; Rumble: off, low (60%), medium (100%, default), high (150%), or a strength
+; in percent (up to 200; strong moments then reach the pad's full strength). The pad
+; of the human controlling the player concerned vibrates on dunks, blocks,
+; steals, contact and the other plays in [rumble]; never in the menus or for
+; players the computer controls.
+;Rumble=medium
+
+[rumble]
+; Strength of each rumble event in percent of its pattern (0 = off, 100 =
+; default, up to 200), on top of [input] Rumble.
+; Dunk: the dunker. Block: the blocker. Steal: the stealer. HardContact and
+; Contact: the player knocked off balance; HardContactBy and ContactBy: the
+; player who made the contact. KnockedDown: a player who falls. HitsFloor: a
+; player landing on the floor. JumpBall: the jumper. Basket: the shooter of a
+; basket made. Injury: the injured player. KnockedDownBy: the player who
+; knocked another down. HangOnRim: a player hanging on the rim after a dunk.
+;Dunk=100
+;Block=100
+;Steal=100
+;HardContact=100
+;HardContactBy=100
+;Contact=100
+;ContactBy=100
+;KnockedDown=100
+;HitsFloor=100
+;JumpBall=100
+;Basket=100
+;Injury=100
+;KnockedDownBy=100
+;HangOnRim=100

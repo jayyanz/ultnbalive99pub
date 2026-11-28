@@ -60,8 +60,16 @@
  * 10. Alt-Tab in the menus (alttab.inc): the front end waits for good once
  *     Windows minimises the game window; the exe's IsIconic answers "not
  *     minimised" to ferender_drawframe only, so the menus keep drawing.
+ * 11. Gamepads (pad_input.inc, 0.4.0): the exe's WINMM joystick calls are
+ *     answered from SDL3 gamepads (up to the game's 4 controller slots), with
+ *     our own pad names, 12 buttons, triggers as buttons and the D-pad on X/Y.
+ *     pad_ini.inc serves inpdevs.ini with our section per pad family (button
+ *     names and our default layout) and makes A/Cross accept, B/Circle back in
+ *     the menus. rumble.inc vibrates the pad of the human concerned on dunks,
+ *     blocks, steals, contact and other named game events.
  *
- * Settings: nba99fix.ini next to the exe, section [nba99] (all optional).
+ * Settings: nba99fix.ini next to the exe, section [nba99] (all optional);
+ * gamepads in [input].
  * Log: logs\<session>\nba99core.log (Debug build, or Log=1).
  */
 #define WIN32_LEAN_AND_MEAN
@@ -85,6 +93,16 @@ static CRITICAL_SECTION g_cs;
 static LARGE_INTEGER g_qpf, g_qpc0;
 static char g_exe_dir[MAX_PATH];      /* with trailing backslash */
 static char g_ini[MAX_PATH];
+static int g_pad_on;                  /* gamepads through SDL3 (pad_input.inc) */
+static int pad_name_key(const char *sub);
+
+/* case-insensitive strstr (ASCII) */
+static const char *strstr_i(const char *s, const char *f)
+{
+    size_t n = strlen(f);
+    for (; *s; s++) if (!_strnicmp(s, f, n)) return s;
+    return NULL;
+}
 
 static double now_ms(void)
 {
@@ -482,6 +500,7 @@ static LONG WINAPI h_RegOpenKeyExA(HKEY root, LPCSTR sub, DWORD opt, REGSAM sam,
 {
     char at[96];
     CALLER(at);
+    if (pad_name_key(sub)) return ERROR_FILE_NOT_FOUND;
     if (is_our_key(root, sub)) {
         int i;
         for (i = 0; i < VKEY_MAX; i++)
@@ -528,6 +547,7 @@ static LONG WINAPI h_RegQueryValueExA(HKEY k, LPCSTR name, LPDWORD res, LPDWORD 
         LOG("registry: read \"%s\" from %s: %s (result %ld)", name ? name : "(default)", at, shown, r);
         return r;
     }
+    if (pad_name_key(name)) return ERROR_FILE_NOT_FOUND;   /* the game's once-a-second joystick name read */
     {
         LONG r = o_RegQueryValueExA(k, name, res, type, data, cb);
         LOG("registry: read \"%s\" from a real key, from %s: result %ld", name ? name : "(default)", at, r);
@@ -828,6 +848,9 @@ static HRESULT WINAPI h_DirectDrawCreate(GUID *g, void **out, void *outer)
 #include "mouse.inc"          /* front-end mouse: the picture vs the 640x480 child windows */
 #include "wintext.inc"        /* front-end labels: WM_SETTEXT with the game's own pointer */
 #include "alttab.inc"         /* Alt-Tab in the menus: no wait for good while minimised */
+#include "pad_input.inc"      /* gamepads through SDL3 (0.4.0) */
+#include "pad_ini.inc"        /* our pad sections in a served inpdevs.ini; menu accept/back (0.4.0) */
+#include "rumble.inc"         /* rumble from the game's named events (0.4.0) */
 
 /* ------------------------------------------------------------------------- */
 /* LoadLibraryA: modules the game loads (the THRASH driver, CTRLS.DLL,       */
@@ -1022,6 +1045,9 @@ static void init(HINSTANCE self)
     mouse_setup(exe);
     wintext_setup(exe);
     alttab_setup(exe);
+    pad_setup(exe);
+    pad_ini_setup(exe);
+    rumble_setup();
 
     g_keep_desktop = ini_int("KeepDesktopMode", 1);
     if (g_keep_desktop) {

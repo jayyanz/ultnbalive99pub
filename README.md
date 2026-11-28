@@ -5,8 +5,8 @@ with a 16-bit setup program that no longer runs on 64-bit Windows. This project 
 current PCs without changing any of its files: a launcher and a set of DLLs sit next to the game and fix it
 in memory as it runs.
 
-Release 0.3: the game runs as shipped on Windows 10 and 11, with our own sound driver, fast loading from
-network drives and smooth 60 fps matches.
+Release 0.4: the game runs as shipped on Windows 10 and 11, with our own sound driver, fast loading from
+network drives, smooth 60 fps matches, and modern gamepads with rumble.
 
 - **No installer, no disc, no registry:** a plain copy of the disc's game folder runs. The CD check is
   skipped in memory, the install paths the game expects are supplied by our core, and the game's registry
@@ -25,12 +25,21 @@ network drives and smooth 60 fps matches.
 - **Smooth frame pacing (0.3):** every frame of a match shows exactly one step of the game, and the game clock
   is matched to the screen, so animation and camera movement are even. Works on 60 Hz and 120 Hz screens, and
   with G-Sync or FreeSync at other rates.
+- **Gamepads (0.4):** Xbox, PlayStation, Nintendo and other pads work through SDL3, up to the game's four
+  controllers, and can be plugged in and out while the game runs. Each pad shows its own button names in the
+  game's Configure Controller screen, and starts with the PlayStation version's layout (turbo on the right
+  trigger). The D-pad, left stick and both triggers work; the game's own Analog Mode setting steers with the
+  stick between the eight directions. In the menus A (Cross) accepts and B (Circle) goes back; Start skips the
+  intro movies and auto replays. Your button changes are kept as usual in `devcfgs.ini`.
+- **Rumble (0.4):** the pad of the player concerned vibrates on dunks, blocks, steals, contact, knock-downs,
+  hanging on the rim, injuries, jump balls and baskets; never in the menus or for players the computer
+  controls. Medium strength by default, with low, high and off, and a strength for each event.
 - **Keys:** Page Down saves a screenshot to `screenshots\` in the game folder; Ctrl+F11 shows or hides the
   frame rate.
 - **Settings:** `nba99fix.ini` (the game keeps its own settings in `nba99.ini`).
 
-Later releases are planned to add gamepads with rumble, the rosters (including the shipped 1998-99 set),
-an in-game options menu, visual options and multiplayer.
+Later releases are planned to add the rosters (including the shipped 1998-99 set), an in-game options menu,
+visual options and multiplayer.
 
 **Unofficial.** Not affiliated with or endorsed by Electronic Arts. You need your own copy of the
 game. No EA code, data or art is included in this project or its downloads.
@@ -74,12 +83,17 @@ ones you copied in step 5 (and `nba99fix.ini`, `logs\` and `crash\` if they are 
 The shipped 1998-99 rosters stay on the disc (`\NBA99\ORIGDB` and `\NBA99\DBDATA`); the patch replaces some
 of the roster tables in `ORIGDB`. A later release explains how to use the shipped rosters as well.
 
-## Known limitations in 0.3
+## Known limitations in 0.4
 
 - Screens whose refresh rate is not a multiple of 60 Hz (75, 100, 144 Hz) without G-Sync or FreeSync show
   matches unevenly; set the desktop to 60 or 120 Hz, or turn on variable refresh.
 - Auto replays run at 15 frames a second, as the game was made.
-- EA's licence screen at start waits about 8 seconds unless a key is pressed.
+- EA's licence screen at start waits about 8 seconds unless a key or a pad button is pressed.
+- Gamepads: the menus cannot be moved through with the pad (the game's menus are mouse driven; A and B accept
+  and go back). Up to four controllers, as the game was made: pads 3 and 4 take the places of the two keyboard
+  players. Movement follows the stick in the game's own steps, not fully analogue.
+- Gamepads: tested on an Xbox Wireless Controller; PlayStation, Nintendo, Bluetooth and several pads at once are
+  supported but not yet tested on real hardware.
 - The menus themselves are the game's own 640x480 pictures, scaled.
 - The game mixes all its sound to stereo; positioned (3D) sound around surround speakers is not active yet.
 
@@ -112,7 +126,7 @@ user's machine from their own files. See [CONTRIBUTING.md](CONTRIBUTING.md) for 
 | Component | Licence | Licence file |
 |---|---|---|
 | DOSBox Staging CRT shaders crt-hyllian and vga-1080p, ported to HLSL (in `glide2x.dll`) | MIT | `src/third_party/CRT-SHADERS-LICENSE.txt` |
-| SDL 3.2.26 (`SDL3.dll`, used by `eacsnd.dll`) | zlib | `src/third_party/SDL3-LICENSE.txt` |
+| SDL 3.2.26 (`SDL3.dll`, used by `eacsnd.dll` for sound and `nba99core.dll` for gamepads and rumble) | zlib | `src/third_party/SDL3-LICENSE.txt` |
 
 ## Licence
 
