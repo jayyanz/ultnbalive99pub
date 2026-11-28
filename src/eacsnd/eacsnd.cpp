@@ -23,8 +23,8 @@
  *      11025 Hz and stereo16, stereo8, mono16, mono8 in that order of preference
  *      (the game passes back the caps bits: 22050 Hz stereo 16-bit); 0x20000 turns on 3D voices
  *      (EA's DLL reports it only with hardware 3D buffers, none on Windows 11; ours always does,
- *      but in the first game run with ours the game still started with 0x808: what turns the
- *      3D voices on is still to be found)
+ *      but the game starts in auto mode, where iSNDverifymode drops the 3D bit, and no sound in
+ *      the shipped banks is marked 3D: the game never uses the 3D functions; see src/README.md)
  *  _iSNDdirectstop@0
  *  _iSNDdirectserve@0               called by the game's timer (0x56B174) under its sound
  *      lock: tops up the stream, calling the tick every 1/100 s of sound at the same
